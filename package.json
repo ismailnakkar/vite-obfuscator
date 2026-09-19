@@ -1,0 +1,59 @@
+{
+    "name": "@ismailnakkar/vite-obfuscator",
+    "version": "1.0.0",
+    "description": "Vite plugin that obfuscates the shipped JS island, with guards that fail the build on silent corruption.",
+    "keywords": [
+        "vite",
+        "vite-plugin",
+        "obfuscation",
+        "javascript-obfuscator",
+        "code-protection"
+    ],
+    "homepage": "https://github.com/ismailnakkar/vite-obfuscator",
+    "bugs": {
+        "url": "https://github.com/ismailnakkar/vite-obfuscator/issues"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/ismailnakkar/vite-obfuscator.git"
+    },
+    "license": "MIT",
+    "author": {
+        "name": "Ismail Nakkar",
+        "email": "juge.steam@gmail.com"
+    },
+    "type": "module",
+    "main": "src/index.js",
+    "types": "src/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./src/index.d.ts",
+            "import": "./src/index.js"
+        }
+    },
+    "files": [
+        "src"
+    ],
+    "publishConfig": {
+        "access": "public"
+    },
+    "engines": {
+        "node": "^20.19.0 || >=22.12.0"
+    },
+    "scripts": {
+        "test": "vitest run",
+        "prepublishOnly": "vitest run"
+    },
+    "dependencies": {
+        "acorn": "^8.12.0"
+    },
+    "peerDependencies": {
+        "javascript-obfuscator": "^5.4.7",
+        "vite": "^8.0.0"
+    },
+    "devDependencies": {
+        "javascript-obfuscator": "^5.4.7",
+        "vite": "^8.3.0",
+        "vitest": "^4.1.11"
+    }
+}
