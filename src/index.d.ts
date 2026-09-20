@@ -14,6 +14,10 @@ export interface ObfuscatorOptions {
     vmTargetFunctions?: readonly string[];
     vmExcludeFunctions?: readonly string[];
     optionsPreset?: string;
+    /** False for a script served at a fixed URL, whose name cannot be content-addressed. */
+    rehash?: boolean;
+    /** Strings that must survive into the obfuscated chunks — a tree-shaking tripwire. */
+    mustContain?: readonly string[];
     timeout?: number;
     version?: string;
     overrides?: Record<string, unknown>;

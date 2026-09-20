@@ -67,6 +67,8 @@ export default function obfuscator(options = {}) {
         vmTargetFunctions,
         vmExcludeFunctions,
         optionsPreset = 'high-obfuscation',
+        rehash = true,
+        mustContain = [],
         timeout = PRO_API_TIMEOUT_MS,
         version,
         overrides = {},
@@ -148,12 +150,31 @@ export default function obfuscator(options = {}) {
             const renames = [];
             const pending = [];
 
+            // Every target read up front, because mustContain is answered across all of them at once
+            // and has to run BEFORE any obfuscation — afterwards the identifiers it looks for are
+            // mangled and every needle would appear missing.
+            const sources = new Map();
+
+            for (const chunk of targets) {
+                sources.set(chunk.fileName, restoreVmComments(await readFile(path.resolve(outputDir, chunk.fileName), 'utf8')));
+            }
+
+            const absent = mustContain.filter((needle) => ![...sources.values()].some((code) => code.includes(needle)));
+
+            if (absent.length > 0) {
+                this.error(
+                    `[Obfuscator] the obfuscated chunks are missing required content: ${absent.join(', ')}.\n`
+                    + 'Code nothing imports is dropped by tree-shaking with no error of its own, so this is\n'
+                    + 'the only thing that notices. Check the keep-alive references in the entry module.',
+                );
+            }
+
             // Nothing reaches disk in this pass. A guard firing on chunk N used to leave chunks
             // 1..N-1 already renamed with the manifest still naming the files the rename deleted —
             // and under emptyOutDir:false that directory is what the site is serving.
             for (const chunk of dependenciesFirst(targets)) {
                 const filePath = path.resolve(outputDir, chunk.fileName);
-                let code = restoreVmComments(await readFile(filePath, 'utf8'));
+                let code = sources.get(chunk.fileName);
 
                 // A dependency handled earlier in this loop has a new name, and this chunk still
                 // imports the old one. Repaired here because it can only be repaired here: once
@@ -221,7 +242,9 @@ export default function obfuscator(options = {}) {
                     this.error(`[Obfuscator] ${chunk.fileName} could not be obfuscated after ${attempts} attempt(s)${lastError ? `: ${lastError.message}` : ': the output did not parse'}`);
                 }
 
-                const rehashed = rehashedName(chunk.fileName, result);
+                // Opt-out for a script served at a fixed URL: its name is a contract with whoever
+                // embeds it, so it cannot be content-addressed.
+                const rehashed = rehash ? rehashedName(chunk.fileName, result) : chunk.fileName;
 
                 pending.push({chunk, filePath, code: result, rehashed});
 

@@ -37,6 +37,8 @@ obfuscator({
 | `islandRoots` | Directories holding the code to protect. Required; drives the boundary guard. |
 | `apiToken` | Required for the Pro VM, *together with* `vmObfuscation`. Either one alone means local obfuscation. |
 | `vmObfuscation` | Routes marked functions through the Pro VM. Needs `apiToken`; the build refuses it without one. |
+| `rehash` | Defaults to **true**. False for a script served at a fixed URL, whose name is a contract. |
+| `mustContain` | Strings that must survive into the built chunks — a tripwire for tree-shaking. |
 | `overrides` | Merged last into the `javascript-obfuscator` options. |
 
 A chunk is obfuscated when at least one entry reaches it and **every** entry that reaches it is in
@@ -70,6 +72,8 @@ the comment with it.
   deterministic and tried once; the Pro API is retried.
 - **`… is in an import cycle between obfuscated chunks`** — no processing order can rewrite both
   sides, so renaming would strand one. Break the cycle.
+- **`missing required content: …`** — a `mustContain` string is not in the output. Nothing imports
+  it, so tree-shaking dropped it silently. Check the keep-alive references in the entry.
 
 ## How it works
 

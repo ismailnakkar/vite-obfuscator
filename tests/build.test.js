@@ -223,6 +223,61 @@ describe('a minified build', () => {
     });
 });
 
+describe('mustContain', () => {
+    it('passes when the string survived into the built chunk', async () => {
+        const outDir = join(import.meta.dirname, '..', '.tmp-must-ok');
+
+        await expect(
+            run(['entry.js'], {include: ['entry.js'], mustContain: ['ready']}, outDir),
+        ).resolves.toBeDefined();
+    });
+
+    // Code nothing imports is dropped by tree-shaking silently. This guard is the only thing that
+    // notices, so it has to fire before obfuscation mangles the very name it looks for.
+    it('fails the build when the string is gone', async () => {
+        const outDir = join(import.meta.dirname, '..', '.tmp-must-fail');
+
+        await expect(
+            run(['entry.js'], {include: ['entry.js'], mustContain: ['ready', 'aDecoyNothingImports']}, outDir),
+        ).rejects.toThrow(/missing required content: aDecoyNothingImports/);
+    });
+});
+
+describe('rehash: false', () => {
+    // A script served at a fixed URL cannot be content-addressed — its name is a contract with
+    // whoever embeds it. The bytes still change; the name must not.
+    it('obfuscates the chunk but leaves its filename alone', async () => {
+        const plainDir = join(import.meta.dirname, '..', '.tmp-fixed-plain');
+        const outDir = join(import.meta.dirname, '..', '.tmp-fixed');
+
+        await build({
+            root: fixtures,
+            logLevel: 'silent',
+            build: {
+                outDir: plainDir,
+                emptyOutDir: true,
+                minify: false,
+                // input goes inside rolldownOptions: passing that key makes Vite ignore
+                // rollupOptions entirely. output.comments mirrors what the plugin's config() hook
+                // forces, so obfuscation is the only difference between the two builds.
+                rolldownOptions: {
+                    input: [join(fixtures, 'entry.js')],
+                    output: {comments: {legal: true}},
+                },
+            },
+        });
+        const plainName = readdirSync(join(plainDir, 'assets')).find((f) => f.startsWith('entry-'));
+
+        await run(['entry.js'], {include: ['entry.js'], rehash: false}, outDir);
+
+        const assets = join(outDir, 'assets');
+        const entryFile = readdirSync(assets).find((f) => f.startsWith('entry-'));
+
+        expect(entryFile).toBe(plainName);
+        expect(readFileSync(join(assets, entryFile), 'utf8')).toMatch(/_0x[0-9a-f]+/);
+    });
+});
+
 describe('the parse guard', () => {
     it('fails the build on unparseable output, without retrying deterministic local obfuscation', async () => {
         vi.resetModules();
