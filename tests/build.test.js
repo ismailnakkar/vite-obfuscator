@@ -136,6 +136,16 @@ describe('a real build', () => {
         expect(existsSync(join(outDir, listed.find((f) => f.includes('entry-'))))).toBe(true);
     });
 
+    // Without this, unmatchedIncludes could be stubbed to [] — or fully inverted — and the suite
+    // stayed green: the leak test below only asserts the message prefix, which never changed.
+    it('names the include that matched no entry, instead of blaming a cross-import', async () => {
+        const outDir = join(import.meta.dirname, '..', '.tmp-badinclude');
+
+        await expect(
+            run(['entry.js'], {include: ['entry']}, outDir),
+        ).rejects.toThrow(/match no build entry: entry/);
+    });
+
     it('fails the build when an island module leaks into a non-island entry', async () => {
         const outDir = join(import.meta.dirname, '..', '.tmp-leak');
 

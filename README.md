@@ -33,9 +33,9 @@ obfuscator({
 | option | |
 | --- | --- |
 | `enable` | Defaults to **true**. False skips obfuscation entirely; the plugin is build-only either way. |
-| `include` | Entry **source paths**, as written in `vite.config` — not entry names. Required. |
+| `include` | Entry **source paths**, as written in `vite.config` — not entry names, and no `./` prefix. Required. |
 | `islandRoots` | Directories holding the code to protect. Required; drives the boundary guard. |
-| `apiToken` | Required for the Pro VM, *together with* `vmObfuscation`. Either one alone means local obfuscation. |
+| `apiToken` | Required for the Pro VM, *together with* `vmObfuscation`. Alone it is ignored. |
 | `vmObfuscation` | Routes marked functions through the Pro VM. Needs `apiToken`; the build refuses it without one. |
 | `rehash` | Defaults to **true**. False for a script served at a fixed URL, whose name is a contract. |
 | `mustContain` | Strings that must survive into the built chunks — a tripwire for tree-shaking. |
@@ -58,9 +58,13 @@ Legal form (`/*! … */`) — that is what survives bundling. The plugin counts 
 and in the built chunk and fails if the two differ, because a marker lost in between means that
 function ships without the VM and nothing else would say so.
 
-Markers may sit anywhere in the graph. One placement rule: never on a module's first line when that
-module has a dynamic import — Vite prepends its preload import onto that line and Rollup discards
-the comment with it.
+You do not need to disable minification or configure your minifier: the plugin sets
+`build.rolldownOptions.output.comments` to `{legal: true}`, and that alone is what carries the
+markers through — measured with both Vite 8's default oxc minifier and terser. Without it, neither
+keeps them, and no minifier-side setting can bring them back: the comment is already gone before
+the minifier runs.
+
+Markers may sit anywhere in the graph.
 
 ## Build failures
 
@@ -74,6 +78,9 @@ the comment with it.
   sides, so renaming would strand one. Break the cycle.
 - **`missing required content: …`** — a `mustContain` string is not in the output. Nothing imports
   it, so tree-shaking dropped it silently. Check the keep-alive references in the entry.
+- **`islandRoots not found on disk`** — a root path does not exist, so the boundary guard matched
+  nothing and would pass on any input. Usually a typo; relative roots resolve against Vite's
+  `root`, and the message prints the absolute path it tried.
 
 ## How it works
 

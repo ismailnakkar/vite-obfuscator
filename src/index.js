@@ -1,5 +1,6 @@
 import {parse} from 'acorn';
 import JavaScriptObfuscator from 'javascript-obfuscator';
+import {existsSync, realpathSync} from 'node:fs';
 import {readFile, rm, writeFile} from 'node:fs/promises';
 import path from 'node:path';
 import {buildObfuscatorConfig} from './config.js';
@@ -7,7 +8,7 @@ import {leakedIslandModules} from './guards.js';
 import {pointManifestAt} from './manifest.js';
 import {VM_COMMENT_STANDARD, countMarkers, restoreVmComments, sourceMarkers} from './markers.js';
 import {rehashedName} from './rehash.js';
-import {selectTargets} from './select.js';
+import {selectTargets, unmatchedIncludes} from './select.js';
 
 const PLUGIN_NAME = 'vite-obfuscator';
 const MAX_RETRIES = 3;
@@ -36,7 +37,7 @@ function dependenciesFirst(targets) {
     const visit = (chunk) => {
         if (!chunk || done.has(chunk.fileName)) return;
 
-        // Rollup can emit chunks that import each other. No order repairs both, so this fails
+        // Rolldown can emit chunks that import each other. No order repairs both, so this fails
         // loudly rather than shipping one of them with a stale specifier.
         if (visiting.has(chunk.fileName)) {
             throw new Error(`[Obfuscator] ${chunk.fileName} is in an import cycle between obfuscated chunks, which cannot be renamed safely.`);
@@ -86,7 +87,11 @@ export default function obfuscator(options = {}) {
     }
 
     const useVM = vmObfuscation && apiToken.trim() !== '';
-    const roots = islandRoots.map((root) => path.resolve(root));
+
+    // Filled in configResolved, which is the first hook that knows Vite's root. Resolving at
+    // construction time would use process.cwd() instead, and `vite build --root <dir>` moves one
+    // and not the other — pointing every root at the wrong tree.
+    let roots = [];
 
     const standardConfig = buildObfuscatorConfig({
         optionsPreset, useVM: false, vmObfuscationThreshold,
@@ -102,10 +107,34 @@ export default function obfuscator(options = {}) {
         apply: 'build',
         enforce: 'post',
 
-        // Without a token the VM request falls back to standard obfuscation, silently.
+        configResolved(config) {
+            // Realpath, not just resolve: Rolldown reports module ids through the real path, so a
+            // project reached via a symlink (a CI checkout, a pnpm store, /tmp on macOS) would give
+            // roots that match no module at all — and the boundary guard would compare empty sets
+            // and pass. existsSync cannot catch that: the symlink exists.
+            //
+            // Not `.map(realpathSync)` — map passes the index as realpathSync's options argument.
+            roots = islandRoots.map((root) => {
+                const absolute = path.resolve(config.root, root);
+
+                // A missing root stays unresolved so buildStart can still name it.
+                return existsSync(absolute) ? realpathSync(absolute) : absolute;
+            });
+        },
+
         buildStart() {
+            // Without a token the VM request falls back to standard obfuscation, silently.
             if (vmObfuscation && apiToken.trim() === '') {
                 this.error('[Obfuscator] vmObfuscation is on but OBFUSCATOR_API_TOKEN is empty: every marked function would ship without the VM.');
+            }
+
+            // A root on no disk matches no module id, leaving the boundary guard comparing empty
+            // sets — the same silent pass as islandRoots: [], one typo away. The resolved absolute
+            // paths are printed so a cwd mismatch reads plainly instead of as a phantom.
+            const missing = roots.filter((root) => !existsSync(root));
+
+            if (missing.length > 0) {
+                this.error(`[Obfuscator] islandRoots not found on disk: ${missing.join(', ')}. A root that matches no module silently disables the boundary guard — check the path.`);
             }
         },
 
@@ -134,11 +163,16 @@ export default function obfuscator(options = {}) {
             const leaked = leakedIslandModules(chunks, targets, roots);
 
             if (leaked.length > 0) {
+                const unmatched = unmatchedIncludes(bundle, include);
+
                 this.error(
                     `[Obfuscator] ${leaked.length} module(s) under ${islandRoots.join(', ')} are bundled but NOT obfuscated:\n`
                     + leaked.map((id) => `    ${id}`).join('\n') + '\n\n'
-                    + 'A chunk is obfuscated only when EVERY entry that reaches it is an included entry. '
-                    + 'Something outside the island now imports one of these, so its chunk is shared and was spared.',
+                    + 'A chunk is obfuscated only when EVERY entry that reaches it is an included entry.\n'
+                    + (unmatched.length > 0
+                        ? `But these include paths match no build entry: ${unmatched.join(', ')}. `
+                          + "include takes entry SOURCE paths as written in vite.config (e.g. 'src/widget/index.js'), not entry names."
+                        : 'Something outside the island now imports one of these, so its chunk is shared and was spared.'),
                 );
             }
 
@@ -192,15 +226,10 @@ export default function obfuscator(options = {}) {
                         `[Obfuscator] ${chunk.fileName}: ${expected} VM marker(s) in its source modules, ${survived} in the built chunk.\n`
                         + 'A lost marker is SILENT: its function would be obfuscated without the VM and ship patchable.\n'
                         + 'Check, in order:\n'
-                        + '  1. the consuming Vite config overrode build.rolldownOptions.output.comments\n'
-                        + '     (this plugin sets it to {legal: true}, which is what keeps these through minification)\n'
-                        + '  2. the build uses a minifier this plugin cannot reach — terser needs its own\n'
-                        + '     terserOptions.format.comments predicate to keep them\n'
-                        + '  3. every marker sits on its own line immediately before an exported function declaration\n'
-                        + '  4. the marker is the legal form, /*! … */, not /* … */\n'
-                        + '  5. the marker is on the module FIRST line and the module has a dynamic import: Vite prepends\n'
-                        + '     its preload import onto that same line and Rollup discards the comment with it. Put a\n'
-                        + '     statement above the marker.\n',
+                        + '  1. a later plugin overrode build.rolldownOptions.output.comments after this one\n'
+                        + '     set it to {legal: true} — that setting is what keeps markers through minification\n'
+                        + '  2. every marker sits on its own line immediately before an exported function declaration\n'
+                        + '  3. the marker is the legal form, /*! … */, not /* … */\n',
                     );
                 }
 
