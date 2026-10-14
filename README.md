@@ -91,6 +91,14 @@ caching. Chunks are processed dependencies-first and importers rewritten to the 
 being obfuscated, since afterwards a specifier is hex-escaped or inside the string array. Nothing is
 written until every chunk clears every guard.
 
+## Upgrading
+
+### From 1.x
+
+- `vmTargetFunctionsMode: 'name'` is now `'root'`.
+- `islandRoots` resolve against Vite's `root`, not the working directory, and a root missing on disk fails the build.
+- An `include` path matches an entry on whole path segments only: `first.js` no longer matches `not-first.js`.
+
 ## Develop
 
 ```bash
