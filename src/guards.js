@@ -6,7 +6,8 @@ const normalize = (p) => p.replaceAll('\\', '/');
  */
 export function leakedIslandModules(chunks, targets, roots) {
     const normalized = roots.map(normalize);
-    const inIsland = (id) => normalized.some((root) => normalize(id).startsWith(root));
+    // Whole segments, as select.js matches include: a bare startsWith put '…/links-extra' under '…/links'.
+    const inIsland = (id) => normalized.some((root) => normalize(id) === root || normalize(id).startsWith(`${root}/`));
 
     const covered = new Set(targets.flatMap((chunk) => chunk.moduleIds).filter(inIsland));
 

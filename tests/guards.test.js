@@ -24,6 +24,12 @@ describe('leakedIslandModules', () => {
         expect(leakedIslandModules([site], [], ['/app/resources/js/links'])).toEqual([]);
     });
 
+    it('matches a root on whole path segments, not as a string prefix', () => {
+        const sibling = chunk('extra.js', ['/app/resources/js/links-extra/app.ts']);
+
+        expect(leakedIslandModules([sibling], [], ['/app/resources/js/links'])).toEqual([]);
+    });
+
     it('treats a module covered by any target as covered', () => {
         const a = chunk('a.js', ['/app/resources/js/links/dom.ts']);
         const b = chunk('b.js', ['/app/resources/js/links/dom.ts']);
