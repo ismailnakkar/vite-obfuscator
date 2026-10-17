@@ -108,11 +108,6 @@ function walk(node, visit) {
  * what follows.
  *
  * The count guard cannot see these: the marker is still there, just no longer on its function.
- * Vite 8's oxc minifier merges `const`/`let`/`var` declarations of functions and moves their
- * markers into a function body or leaves them stacked after the merged statement; terser inlines a
- * function called once and its marker falls onto the next one, doubling up; a marker on a plain
- * variable never had a function to begin with. Either way nothing is virtualized where it was
- * meant and the build would report success.
  *
  * Throws acorn's SyntaxError when the chunk does not parse.
  */

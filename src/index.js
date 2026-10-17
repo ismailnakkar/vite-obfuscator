@@ -215,13 +215,13 @@ export default function obfuscator(options = {}) {
                     this.error(
                         `[Obfuscator] ${chunk.fileName}: ${misplaced.length} VM marker(s) lead no function of their own in the built chunk:\n`
                         + misplaced.map(({line, column, followedBy}) => `    ${line}:${column} ${followedBy ? `before \`${followedBy}\`` : 'at the end of the chunk'}\n`).join('')
-                        + 'A marker off its function is SILENT: nothing is virtualized where it was meant, and the build passes.\n'
+                        + 'A marker off its function is SILENT: nothing is virtualized where it was meant.\n'
                         + 'Check, in order:\n'
                         + '  1. the build moved it: oxc moves one on a const/let/var function, terser inlines a function called once (build.minify: false fixes both);\n'
-                        + '     Rolldown inlines a single-use object and build.target lowers class fields at any minify setting — mark a function declaration\n'
+                        + '     Rolldown inlines a single-use object at any minify setting — mark a function declaration\n'
                         + '  2. the marker sits on a function, a method, or a const/let/var, property or class field holding one — not a plain value\n'
                         + '  3. a marked function was dropped as unused and its marker kept\n'
-                        + '  4. two markers lead the same function: a minifier stacked them, or each TS overload signature has one — keep one\n',
+                        + '  4. two markers lead the same function — keep one\n',
                     );
                 }
 

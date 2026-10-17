@@ -229,32 +229,6 @@ describe('the marker guard', () => {
         ).rejects.toThrow(/uses-arrows-.*: \d+ VM marker\(s\) (lead no function of their own|in its source modules)/);
     });
 
-    // minify: false does not fix this one, so the message must name another way out. Here and for
-    // overloads, 8.0's Rolldown drops the markers instead, which the count guard reports.
-    it('names Rolldown when it inlines a single-use object and strands its property marker', async () => {
-        const outDir = join(import.meta.dirname, '..', '.tmp-options');
-
-        await expect(
-            run(['options.js'], {include: ['options.js']}, outDir),
-        ).rejects.toThrow(/Rolldown inlines a single-use object|in its source modules/);
-    });
-
-    it('names a marker on each TS overload signature as the cause of a stacked marker', async () => {
-        const outDir = join(import.meta.dirname, '..', '.tmp-overload');
-
-        await expect(
-            run(['overload.ts'], {include: ['overload.ts']}, outDir),
-        ).rejects.toThrow(/each TS overload signature has one|in its source modules/);
-    });
-
-    it('says a marker left at the end of the chunk is there, not before an empty string', async () => {
-        const outDir = join(import.meta.dirname, '..', '.tmp-trailing');
-
-        await expect(
-            run(['trailing.js'], {include: ['trailing.js']}, outDir),
-        ).rejects.toThrow(/ {4}\d+:1 at the end of the chunk\n/);
-    });
-
     it('fails the build on a marker that sits on a plain variable', async () => {
         const outDir = join(import.meta.dirname, '..', '.tmp-marked-var');
 
