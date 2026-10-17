@@ -17,14 +17,14 @@ afterAll(() => {
     }
 });
 
-const run = (inputs, options, outDir) => build({
+const run = (inputs, options, outDir, minify = false) => build({
     root: fixtures,
     logLevel: 'silent',
     build: {
         outDir,
         emptyOutDir: true,
         manifest: true,
-        minify: false,
+        minify,
         rollupOptions: {input: inputs.map((i) => join(fixtures, i))},
     },
     plugins: [obfuscator({enable: true, apiToken: '', islandRoots: [fixtures], ...options})],
@@ -209,6 +209,69 @@ describe('the marker guard', () => {
             run(['uses-outside.js'], {include: ['uses-outside.js']}, outDir),
         ).resolves.toBeDefined();
     });
+
+    // Markers on non-exported `const` arrows, as a real consumer writes them. Unminified, each
+    // still leads its declaration in the chunk.
+    it('accepts markers on const arrow functions in an unminified build', async () => {
+        const outDir = join(import.meta.dirname, '..', '.tmp-arrows');
+
+        await expect(
+            run(['uses-arrows.js'], {include: ['uses-arrows.js']}, outDir),
+        ).resolves.toBeDefined();
+    });
+
+    // oxc moves (8.3) or drops (8.0) the markers on the merged consts; either guard must fail the build.
+    it('fails the build when minification moves arrow-function markers off their functions', async () => {
+        const outDir = join(import.meta.dirname, '..', '.tmp-arrows-min');
+
+        await expect(
+            run(['uses-arrows.js'], {include: ['uses-arrows.js']}, outDir, true),
+        ).rejects.toThrow(/uses-arrows-.*: \d+ VM marker\(s\) (lead no function of their own|in its source modules)/);
+    });
+
+    // minify: false does not fix this one, so the message must name another way out. Here and for
+    // overloads, 8.0's Rolldown drops the markers instead, which the count guard reports.
+    it('names Rolldown when it inlines a single-use object and strands its property marker', async () => {
+        const outDir = join(import.meta.dirname, '..', '.tmp-options');
+
+        await expect(
+            run(['options.js'], {include: ['options.js']}, outDir),
+        ).rejects.toThrow(/Rolldown inlines a single-use object|in its source modules/);
+    });
+
+    it('names a marker on each TS overload signature as the cause of a stacked marker', async () => {
+        const outDir = join(import.meta.dirname, '..', '.tmp-overload');
+
+        await expect(
+            run(['overload.ts'], {include: ['overload.ts']}, outDir),
+        ).rejects.toThrow(/each TS overload signature has one|in its source modules/);
+    });
+
+    it('says a marker left at the end of the chunk is there, not before an empty string', async () => {
+        const outDir = join(import.meta.dirname, '..', '.tmp-trailing');
+
+        await expect(
+            run(['trailing.js'], {include: ['trailing.js']}, outDir),
+        ).rejects.toThrow(/ {4}\d+:1 at the end of the chunk\n/);
+    });
+
+    it('fails the build on a marker that sits on a plain variable', async () => {
+        const outDir = join(import.meta.dirname, '..', '.tmp-marked-var');
+
+        await expect(
+            run(['marked-var.js'], {include: ['marked-var.js']}, outDir),
+        ).rejects.toThrow(/1 VM marker\(s\) lead no function of their own in the built chunk:\n {4}2:1 before `var banner/);
+    });
+
+    // retired() is dropped but its legal comment is kept, landing on hot(): one marker in source,
+    // one in the chunk, and a function nobody marked would go to the VM.
+    it('fails the build when a marked exported function was tree-shaken', async () => {
+        const outDir = join(import.meta.dirname, '..', '.tmp-retired');
+
+        await expect(
+            run(['uses-hot.js'], {include: ['uses-hot.js']}, outDir, true),
+        ).rejects.toThrow(/marked function retired \(.*retired\.js\) was tree-shaken/);
+    });
 });
 
 describe('a minified build', () => {
@@ -289,7 +352,7 @@ describe('rehash: false', () => {
 });
 
 describe('the parse guard', () => {
-    it('fails the build on unparseable output, without retrying deterministic local obfuscation', async () => {
+    it('fails the build on unparseable output after retrying local obfuscation', async () => {
         vi.resetModules();
 
         let calls = 0;
@@ -312,11 +375,10 @@ describe('the parse guard', () => {
             logLevel: 'silent',
             build: {outDir, emptyOutDir: true, minify: false, rollupOptions: {input: [join(fixtures, 'entry.js')]}},
             plugins: [mocked({enable: true, apiToken: '', islandRoots: [fixtures], include: ['entry.js']})],
-        })).rejects.toThrow(/could not be obfuscated after 1 attempt\(s\): the output did not parse/);
+        })).rejects.toThrow(/could not be obfuscated after 3 attempt\(s\): the output did not parse/);
 
-        // Local obfuscation is a pure function: asking it twice returns the same garbage. Only the
-        // Pro API earns MAX_RETRIES.
-        expect(calls).toBe(1);
+        // Unseeded, every local run is a fresh draw, so one bad output earns a retry like the Pro API's.
+        expect(calls).toBe(3);
 
         vi.doUnmock('javascript-obfuscator');
     });

@@ -6,7 +6,9 @@ import path from 'node:path';
 import {buildObfuscatorConfig} from './config.js';
 import {leakedIslandModules} from './guards.js';
 import {pointManifestAt} from './manifest.js';
-import {VM_COMMENT_STANDARD, countMarkers, restoreVmComments, sourceMarkers} from './markers.js';
+import {
+    VM_COMMENT_STANDARD, countMarkers, misplacedMarkers, restoreVmComments, shakenMarkedExports, sourceMarkers,
+} from './markers.js';
 import {rehashedName} from './rehash.js';
 import {selectTargets, unmatchedIncludes} from './select.js';
 
@@ -190,7 +192,40 @@ export default function obfuscator(options = {}) {
             const sources = new Map();
 
             for (const chunk of targets) {
-                sources.set(chunk.fileName, restoreVmComments(await readFile(path.resolve(outputDir, chunk.fileName), 'utf8')));
+                const built = await readFile(path.resolve(outputDir, chunk.fileName), 'utf8');
+                const shaken = shakenMarkedExports(chunk);
+
+                if (shaken.length > 0) {
+                    this.error(
+                        `[Obfuscator] ${chunk.fileName}:\n`
+                        + shaken.map(({id, name}) => `    marked function ${name} (${id}) was tree-shaken; its marker would land on the next statement\n`).join('')
+                        + 'Nothing imports it any more. Delete the function with its marker, or import it.',
+                    );
+                }
+
+                let misplaced;
+
+                try {
+                    misplaced = misplacedMarkers(built);
+                } catch (error) {
+                    this.error(`[Obfuscator] ${chunk.fileName} does not parse before obfuscation: ${error.message}`);
+                }
+
+                if (misplaced.length > 0) {
+                    this.error(
+                        `[Obfuscator] ${chunk.fileName}: ${misplaced.length} VM marker(s) lead no function of their own in the built chunk:\n`
+                        + misplaced.map(({line, column, followedBy}) => `    ${line}:${column} ${followedBy ? `before \`${followedBy}\`` : 'at the end of the chunk'}\n`).join('')
+                        + 'A marker off its function is SILENT: nothing is virtualized where it was meant, and the build passes.\n'
+                        + 'Check, in order:\n'
+                        + '  1. the build moved it: oxc moves one on a const/let/var function, terser inlines a function called once (build.minify: false fixes both);\n'
+                        + '     Rolldown inlines a single-use object and build.target lowers class fields at any minify setting — mark a function declaration\n'
+                        + '  2. the marker sits on a function, a method, or a const/let/var, property or class field holding one — not a plain value\n'
+                        + '  3. a marked function was dropped as unused and its marker kept\n'
+                        + '  4. two markers lead the same function: a minifier stacked them, or each TS overload signature has one — keep one\n',
+                    );
+                }
+
+                sources.set(chunk.fileName, restoreVmComments(built));
             }
 
             const absent = mustContain.filter((needle) => ![...sources.values()].some((code) => code.includes(needle)));
@@ -228,7 +263,7 @@ export default function obfuscator(options = {}) {
                         + 'Check, in order:\n'
                         + '  1. a later plugin overrode build.rolldownOptions.output.comments after this one\n'
                         + '     set it to {legal: true} — that setting is what keeps markers through minification\n'
-                        + '  2. every marker sits on its own line immediately before an exported function declaration\n'
+                        + '  2. every marker sits on its own line immediately before the function it marks\n'
                         + '  3. the marker is the legal form, /*! … */, not /* … */\n',
                     );
                 }
@@ -239,6 +274,8 @@ export default function obfuscator(options = {}) {
                 let lastError = null;
                 let attempts = 0;
 
+                // Local attempts are retried too: with no `seed` the obfuscator draws a fresh one per
+                // run, so an output that did not parse says nothing about the next.
                 while (result === null && attempts < MAX_RETRIES) {
                     attempts++;
 
@@ -261,10 +298,6 @@ export default function obfuscator(options = {}) {
                         lastError = error instanceof Error ? error : new Error(String(error));
                         console.error(`   ✗ ${chunk.fileName}: attempt ${attempts}/${MAX_RETRIES} failed: ${lastError.message}`);
                     }
-
-                    // Local obfuscation is deterministic: a rerun returns the same unparseable bytes.
-                    // Only the Pro API is worth asking twice.
-                    if (!vm && lastError === null) break;
                 }
 
                 if (result === null) {
