@@ -1,7 +1,6 @@
 import {parse} from 'acorn';
 import JavaScriptObfuscator from 'javascript-obfuscator';
 import {existsSync, realpathSync} from 'node:fs';
-import {readFile, rm, writeFile} from 'node:fs/promises';
 import path from 'node:path';
 import {buildObfuscatorConfig} from './config.js';
 import {leakedIslandModules} from './guards.js';
@@ -94,6 +93,8 @@ export default function obfuscator(options = {}) {
     // construction time would use process.cwd() instead, and `vite build --root <dir>` moves one
     // and not the other — pointing every root at the wrong tree.
     let roots = [];
+    // The manifest and import map files that name chunks, at the paths Vite writes them to.
+    let manifests = [];
 
     const standardConfig = buildObfuscatorConfig({
         optionsPreset, useVM: false, vmObfuscationThreshold,
@@ -122,6 +123,15 @@ export default function obfuscator(options = {}) {
                 // A missing root stays unresolved so buildStart can still name it.
                 return existsSync(absolute) ? realpathSync(absolute) : absolute;
             });
+
+            const {manifest, ssrManifest, chunkImportMap, rolldownOptions} = config.build;
+
+            manifests = [
+                manifest === true ? '.vite/manifest.json' : manifest,
+                ssrManifest === true ? '.vite/ssr-manifest.json' : ssrManifest,
+                // As Vite's getImportMapFilename names it.
+                chunkImportMap && (rolldownOptions?.experimental?.chunkImportMap?.fileName || 'importmap.json'),
+            ].filter(Boolean);
         },
 
         buildStart() {
@@ -140,8 +150,8 @@ export default function obfuscator(options = {}) {
             }
         },
 
-        // Markers are legal comments, and Rolldown drops comments while rendering chunks — while this
-        // plugin reads the file FROM disk (see writeBundle). Without this the marker-count guard fires
+        // Markers are legal comments, and Rolldown drops comments while rendering chunks — before this
+        // plugin reads the rendered chunk. Without this the marker-count guard fires
         // on every minified build. The plugin owns the precondition it depends on.
         //
         // Not `esbuild.legalComments`: Vite 8 deprecates that key, warns by name about the plugin
@@ -151,14 +161,8 @@ export default function obfuscator(options = {}) {
             return {build: {rolldownOptions: {output: {comments: {legal: true}}}}};
         },
 
-        /**
-         * writeBundle, not generateBundle: Vite resolves its `__VITE_PRELOAD__` placeholder in a
-         * later post hook, so an in-memory chunk still carries it. The obfuscator treats that
-         * placeholder as a global and emits a get/set pair for it; Vite then substitutes `void 0`
-         * into the setter body, producing `void 0 = x` — a bundle no browser can parse. Rewriting
-         * the file on disk obfuscates exactly what ships, placeholders already resolved.
-         */
-        async writeBundle(outputOptions, bundle) {
+        /** Post-order generateBundle, in memory: Vite resolves __VITE_PRELOAD__ in a normal-order generateBundle, so the chunk is final here, and a this.error aborts before Rolldown writes anything. */
+        generateBundle: {order: 'post', async handler(_outputOptions, bundle) {
             const chunks = Object.values(bundle).filter((output) => output.type === 'chunk');
             const targets = selectTargets(bundle, include);
 
@@ -173,8 +177,13 @@ export default function obfuscator(options = {}) {
                     + 'A chunk is obfuscated only when EVERY entry that reaches it is an included entry.\n'
                     + (unmatched.length > 0
                         ? `But these include paths match no build entry: ${unmatched.join(', ')}. `
-                          + "include takes entry SOURCE paths as written in vite.config (e.g. 'src/widget/index.js'), not entry names."
-                        : 'Something outside the island now imports one of these, so its chunk is shared and was spared.'),
+                          + (unmatched.some((p) => !p.endsWith('.html'))
+                              ? "include takes entry SOURCE paths as written in vite.config (e.g. 'src/widget/index.js'), not entry names. "
+                              : '')
+                          + (unmatched.some((p) => p.endsWith('.html'))
+                              ? 'Vite drops the chunk of an HTML page whose script another page also loads: add that script to build.rollupOptions.input and to include.'
+                              : '')
+                        :'Something outside the island now imports one of these, so its chunk is shared and was spared.'),
                 );
             }
 
@@ -182,9 +191,8 @@ export default function obfuscator(options = {}) {
 
             console.log(`\n🔒 Obfuscating ${targets.length} chunk(s) [${useVM ? 'VM-protected where marked' : optionsPreset}]...`);
 
-            const outputDir = outputOptions.dir ?? '.';
             const renames = [];
-            const pending = [];
+            let droppedMaps = 0;
 
             // Every target read up front, because mustContain is answered across all of them at once
             // and has to run BEFORE any obfuscation — afterwards the identifiers it looks for are
@@ -192,7 +200,7 @@ export default function obfuscator(options = {}) {
             const sources = new Map();
 
             for (const chunk of targets) {
-                const built = await readFile(path.resolve(outputDir, chunk.fileName), 'utf8');
+                const built = chunk.code;
                 const shaken = shakenMarkedExports(chunk);
 
                 if (shaken.length > 0) {
@@ -238,11 +246,8 @@ export default function obfuscator(options = {}) {
                 );
             }
 
-            // Nothing reaches disk in this pass. A guard firing on chunk N used to leave chunks
-            // 1..N-1 already renamed with the manifest still naming the files the rename deleted —
-            // and under emptyOutDir:false that directory is what the site is serving.
+            // A guard firing on chunk N aborts the build before Rolldown writes anything: nothing is half-applied.
             for (const chunk of dependenciesFirst(targets)) {
-                const filePath = path.resolve(outputDir, chunk.fileName);
                 let code = sources.get(chunk.fileName);
 
                 // A dependency handled earlier in this loop has a new name, and this chunk still
@@ -304,36 +309,38 @@ export default function obfuscator(options = {}) {
                     this.error(`[Obfuscator] ${chunk.fileName} could not be obfuscated after ${attempts} attempt(s)${lastError ? `: ${lastError.message}` : ': the output did not parse'}`);
                 }
 
+                const fileName = chunk.fileName;
                 // Opt-out for a script served at a fixed URL: its name is a contract with whoever
                 // embeds it, so it cannot be content-addressed.
-                const rehashed = rehash ? rehashedName(chunk.fileName, result) : chunk.fileName;
+                const rehashed = rehash ? rehashedName(fileName, result) : fileName;
+                const mapName = chunk.sourcemapFileName ?? `${fileName}.map`;
 
-                pending.push({chunk, filePath, code: result, rehashed});
-
-                if (rehashed !== chunk.fileName) {
-                    renames.push([chunk.fileName, rehashed]);
+                if (bundle[mapName]) {
+                    delete bundle[mapName];
+                    droppedMaps++;
                 }
 
-                // Logged here, not in the write pass: a VM build spends minutes per chunk, and
-                // batching every line to the end would leave that whole stretch silent.
-                console.log(`   ✓ ${chunk.fileName}${rehashed === chunk.fileName ? '' : ` → ${rehashed}`}${survived > 0 ? ` (${survived} VM marker(s))` : ''}`);
+                chunk.code = result;
+                chunk.fileName = rehashed;
+                if (rehashed !== fileName) renames.push([fileName, rehashed]);
+
+                console.log(`   ✓ ${fileName}${rehashed === fileName ? '' : ` → ${rehashed}`}${survived > 0 ? ` (${survived} VM marker(s))` : ''}`);
             }
 
-            // Every guard has passed, so the disk can move. New bytes first, manifest second, stale
-            // files last: the manifest never names a file that is not there.
-            for (const {code, rehashed} of pending) {
-                await writeFile(path.resolve(outputDir, rehashed), code);
+            const renamed = new Map(renames);
+
+            for (const chunk of chunks) {
+                chunk.imports = chunk.imports.map((f) => renamed.get(f) ?? f);
+                chunk.dynamicImports = chunk.dynamicImports.map((f) => renamed.get(f) ?? f);
             }
 
-            if (renames.length > 0) {
-                await pointManifestAt(outputDir, renames);
-
-                for (const {chunk, filePath, rehashed} of pending) {
-                    if (rehashed !== chunk.fileName) await rm(filePath, {force: true});
-                }
+            if (droppedMaps > 0) {
+                this.warn(`[Obfuscator] dropped ${droppedMaps} sourcemap(s) of obfuscated chunks: each maps the readable code, not the obfuscated output, and its sourcesContent ships that readable source.`);
             }
+
+            pointManifestAt(bundle, manifests, renames);
 
             console.log('');
-        },
+        }},
     };
 }

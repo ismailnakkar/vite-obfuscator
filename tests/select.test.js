@@ -37,6 +37,18 @@ describe('selectTargets', () => {
         expect(selectTargets(bundle, ['resources/js/links/first.ts']).map((c) => c.fileName)).toEqual(['a.js']);
     });
 
+    // Vite deletes the facade of an HTML page whose script another page shares: main.js is left a
+    // non-entry chunk that no entry reaches, yet it still loads lazy.js under the old name.
+    it('spares a chunk that a chunk nothing imports also reaches', () => {
+        const bundle = {
+            'main.js': chunk('main.js', {imports: ['lazy.js']}),
+            'widget.js': chunk('widget.js', {isEntry: true, facadeModuleId: '/app/island/widget.js', imports: ['lazy.js']}),
+            'lazy.js': chunk('lazy.js'),
+        };
+
+        expect(selectTargets(bundle, ['island/widget.js']).map((c) => c.fileName)).toEqual(['widget.js']);
+    });
+
     it('ignores assets and unreached chunks', () => {
         const bundle = {
             'style.css': {type: 'asset', fileName: 'style.css'},

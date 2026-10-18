@@ -25,8 +25,12 @@ export function selectTargets(bundle, include) {
         && wanted.some((path) => matchesEntry(normalize(chunk.facadeModuleId), path));
 
     const reachedBy = new Map();
+    // A chunk nothing imports is seeded like an entry. Vite deletes the facade chunk of an HTML page
+    // whose script another page shares, leaving that script a non-entry chunk no entry reaches;
+    // unseeded, a chunk only it reaches would read as included-only, be renamed, and 404 from it.
+    const imported = new Set(chunks.flatMap((c) => [...c.imports, ...c.dynamicImports]));
 
-    for (const entry of chunks.filter((c) => c.isEntry)) {
+    for (const entry of chunks.filter((c) => c.isEntry || !imported.has(c.fileName))) {
         const queue = [entry.fileName];
         const seen = new Set();
 

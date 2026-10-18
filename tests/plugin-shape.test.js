@@ -14,7 +14,7 @@ describe('the plugin', () => {
     });
 
     it('does nothing at all when disabled', () => {
-        expect(obfuscator({...base, enable: false}).writeBundle).toBeUndefined();
+        expect(obfuscator({...base, enable: false}).generateBundle).toBeUndefined();
     });
 
     // Both have a silent empty behaviour: no include selects no targets, no islandRoots leaves both
@@ -31,7 +31,7 @@ describe('the plugin', () => {
         const plugin = obfuscator({...base, islandRoots: ['src', 'no/such/dir'], enable: true});
         const errors = [];
 
-        plugin.configResolved({root: process.cwd()});
+        plugin.configResolved({root: process.cwd(), build: {}});
         plugin.buildStart.call({error: (m) => errors.push(m)});
 
         expect(errors).toHaveLength(1);
@@ -46,7 +46,7 @@ describe('the plugin', () => {
         const errors = [];
 
         // 'index.js' exists under src/, so this passes only if config.root was honoured.
-        plugin.configResolved({root: join(process.cwd(), 'src')});
+        plugin.configResolved({root: join(process.cwd(), 'src'), build: {}});
         plugin.buildStart.call({error: (m) => errors.push(m)});
 
         expect(errors).toEqual([]);
@@ -56,7 +56,7 @@ describe('the plugin', () => {
         const plugin = obfuscator({...base, enable: true, vmObfuscation: true});
         const errors = [];
 
-        plugin.configResolved({root: process.cwd()});
+        plugin.configResolved({root: process.cwd(), build: {}});
         plugin.buildStart.call({error: (m) => errors.push(m)});
 
         expect(errors).toHaveLength(1);

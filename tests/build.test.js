@@ -1,4 +1,4 @@
-import {existsSync, readFileSync, readdirSync, rmSync} from 'node:fs';
+import {existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {pathToFileURL} from 'node:url';
@@ -17,7 +17,7 @@ afterAll(() => {
     }
 });
 
-const run = (inputs, options, outDir, minify = false) => build({
+const run = (inputs, options, outDir, minify = false, extra = {}) => build({
     root: fixtures,
     logLevel: 'silent',
     build: {
@@ -26,6 +26,7 @@ const run = (inputs, options, outDir, minify = false) => build({
         manifest: true,
         minify,
         rollupOptions: {input: inputs.map((i) => join(fixtures, i))},
+        ...extra,
     },
     plugins: [obfuscator({enable: true, apiToken: '', islandRoots: [fixtures], ...options})],
 });
@@ -80,12 +81,14 @@ describe('a renamed chunk', () => {
     it('is followed by both entries that statically share it', async () => {
         const outDir = join(import.meta.dirname, '..', '.tmp-shared');
 
-        await run(['pair-a.js', 'pair-b.js'], {include: ['pair-a.js', 'pair-b.js']}, outDir);
+        const {output} = await run(['pair-a.js', 'pair-b.js'], {include: ['pair-a.js', 'pair-b.js']}, outDir);
 
         const assets = join(outDir, 'assets');
         const files = readdirSync(assets);
+        const chunkNamed = (prefix) => output.find((o) => o.fileName.startsWith(`assets/${prefix}-`));
 
         expect(files.some((f) => f.startsWith('shared-'))).toBe(true);
+        expect(chunkNamed('pair-a').imports).toEqual([chunkNamed('shared').fileName]);
         expect(unresolvedImportsIn(join(assets, files.find((f) => f.startsWith('pair-a-'))))).toEqual([]);
         expect(unresolvedImportsIn(join(assets, files.find((f) => f.startsWith('pair-b-'))))).toEqual([]);
     });
@@ -115,11 +118,21 @@ describe('a real build', () => {
         });
         const plainName = readdirSync(join(plainDir, 'assets')).find((f) => f.startsWith('entry-'));
 
-        await run(['entry.js'], {include: ['entry.js']}, outDir);
+        const {output} = await run(['entry.js'], {include: ['entry.js']}, outDir);
 
         const assets = join(outDir, 'assets');
-        const entryFile = readdirSync(assets).find((f) => f.startsWith('entry-'));
+        const files = readdirSync(assets);
+        const entryFile = files.find((f) => f.startsWith('entry-'));
         const code = readFileSync(join(assets, entryFile), 'utf8');
+
+        // Rolldown re-keys a renamed chunk, so only the new name is written: no readable twin beside it.
+        expect(files.filter((f) => /^entry-.*\.js$/.test(f))).toHaveLength(1);
+        expect(files.filter((f) => /^lazy-.*\.js$/.test(f))).toHaveLength(1);
+
+        // The import graph follows the rename, so no edge names a file that was never written.
+        const chunkNamed = (prefix) => output.find((o) => o.fileName.startsWith(`assets/${prefix}-`));
+
+        expect(chunkNamed('entry').dynamicImports).toEqual([chunkNamed('lazy').fileName]);
 
         // The bytes changed, so the URL must have changed with them. A no-op rehashedName fails here.
         expect(entryFile).not.toBe(plainName);
@@ -134,6 +147,76 @@ describe('a real build', () => {
 
         expect(listed).toContain(join('assets', entryFile));
         expect(existsSync(join(outDir, listed.find((f) => f.includes('entry-'))))).toBe(true);
+    });
+
+    // The map Rolldown made describes the readable chunk and carries its source in sourcesContent.
+    it('drops the sourcemap of every obfuscated chunk', async () => {
+        const outDir = join(import.meta.dirname, '..', '.tmp-sourcemap');
+
+        const warnings = [];
+
+        await run(['entry.js'], {include: ['entry.js']}, outDir, false, {
+            sourcemap: true,
+            rollupOptions: {input: [join(fixtures, 'entry.js')], onwarn: (w) => warnings.push(w.message)},
+        });
+
+        expect(readdirSync(join(outDir, 'assets')).filter((f) => f.endsWith('.map'))).toEqual([]);
+        // One warning for the whole build, not one per chunk.
+        expect(warnings.filter((m) => m.includes('[Obfuscator] dropped 2 sourcemap(s)'))).toHaveLength(1);
+    });
+
+    // Vite writes index.html in a normal-order generateBundle, so it names the pre-rehash file.
+    it('points an HTML entry at the obfuscated file', async () => {
+        const outDir = join(import.meta.dirname, '..', '.tmp-html');
+
+        await run(['index.html'], {include: ['index.html']}, outDir);
+
+        const src = readFileSync(join(outDir, 'index.html'), 'utf8').match(/<script[^>]* src="\/([^"]+)"/)[1];
+
+        expect(readFileSync(join(outDir, src), 'utf8')).toMatch(/_0x[0-9a-f]+/);
+    });
+
+    // Two pages sharing a script lose their own chunks to Vite before this plugin runs.
+    it('points pages that share a script at it once that script is an included input', async () => {
+        const outDir = join(import.meta.dirname, '..', '.tmp-pages');
+        const pages = ['index.html', 'sub/page.html'];
+
+        await expect(run(pages, {include: pages}, outDir)).rejects.toThrow(
+            /match no build entry: index\.html, sub\/page\.html\. Vite drops the chunk of an HTML page/,
+        );
+
+        await run([...pages, 'entry.js'], {include: ['entry.js']}, outDir);
+
+        for (const page of pages) {
+            const src = readFileSync(join(outDir, page), 'utf8').match(/<script[^>]* src="\/(assets\/entry-[^"]+)"/)[1];
+
+            expect(readFileSync(join(outDir, src), 'utf8')).toMatch(/_0x[0-9a-f]+/);
+        }
+    });
+
+    // build.chunkImportMap writes importmap.json in a normal-order generateBundle, naming pre-rehash files.
+    it('repoints the chunk import map file', async () => {
+        const outDir = join(import.meta.dirname, '..', '.tmp-importmap');
+
+        await run(['index.html'], {include: ['index.html']}, outDir, false, {chunkImportMap: true});
+
+        const files = Object.values(JSON.parse(readFileSync(join(outDir, 'importmap.json'), 'utf8')).imports);
+
+        expect(files.length).toBeGreaterThan(0);
+        for (const file of files) expect(existsSync(join(outDir, file))).toBe(true);
+    });
+
+    it('repoints a manifest at a custom path, and the SSR manifest', async () => {
+        const outDir = join(import.meta.dirname, '..', '.tmp-manifest-path');
+
+        await run(['entry.js'], {include: ['entry.js']}, outDir, false, {manifest: 'assets-manifest.json', ssrManifest: 'ssr.json'});
+
+        const listed = Object.values(JSON.parse(readFileSync(join(outDir, 'assets-manifest.json'), 'utf8'))).map((e) => e.file);
+        const ssrListed = Object.values(JSON.parse(readFileSync(join(outDir, 'ssr.json'), 'utf8'))).flat();
+
+        expect(listed).toHaveLength(2);
+        expect(ssrListed.length).toBeGreaterThan(0);
+        for (const file of [...listed, ...ssrListed]) expect(existsSync(join(outDir, file))).toBe(true);
     });
 
     // Without this, unmatchedIncludes could be stubbed to [] — or fully inverted — and the suite
@@ -167,12 +250,16 @@ describe('a real build', () => {
             renderChunk: (code) => code.replaceAll('/*! javascript-obfuscator:vm */', ''),
         };
 
+        rmSync(outDir, {recursive: true, force: true});
+        mkdirSync(join(outDir, '.vite'), {recursive: true});
+        writeFileSync(join(outDir, '.vite', 'manifest.json'), '{"old":true}');
+
         await expect(build({
             root: fixtures,
             logLevel: 'silent',
             build: {
                 outDir,
-                emptyOutDir: true,
+                emptyOutDir: false,
                 manifest: true,
                 minify: false,
                 rollupOptions: {input: [join(fixtures, 'entry.js')]},
@@ -182,19 +269,11 @@ describe('a real build', () => {
             })],
         })).rejects.toThrow(/VM marker\(s\) in its source modules/);
 
-        // The guard fires on the SECOND chunk: the lazy one is processed first and passes. Nothing
-        // may have moved on disk yet — under emptyOutDir:false this directory is what the site is
-        // serving, so a half-applied pass would leave the manifest naming files a rename deleted.
-        const assets = join(outDir, 'assets');
-        const manifest = JSON.parse(readFileSync(join(outDir, '.vite', 'manifest.json'), 'utf8'));
-
-        for (const entry of Object.values(manifest)) {
-            expect(existsSync(join(outDir, entry.file))).toBe(true);
-        }
-
-        expect(readdirSync(assets).every((f) => !f.includes('javascript-obfuscator'))).toBe(true);
-        expect(readFileSync(join(assets, readdirSync(assets).find((f) => f.startsWith('lazy-'))), 'utf8'))
-            .toContain('function helper');
+        // The guard fires on the SECOND chunk: the lazy one is processed first and passes. A failing
+        // guard writes nothing: under emptyOutDir:false this directory is what the site is serving,
+        // so the old manifest stays exactly as it was and no readable chunk lands beside it.
+        expect(readdirSync(outDir)).toEqual(['.vite']);
+        expect(readFileSync(join(outDir, '.vite', 'manifest.json'), 'utf8')).toBe('{"old":true}');
     });
 });
 
@@ -250,7 +329,7 @@ describe('the marker guard', () => {
 
 describe('a minified build', () => {
     // Rolldown drops comments while rendering chunks, so on a minified build the plugin's config()
-    // hook is the only reason any marker reaches the file it later reads off disk. Remove that hook
+    // hook is the only reason any marker reaches the chunk it later reads. Remove that hook
     // and this build dies on the marker count.
     it('keeps its markers, because the plugin sets the comment option itself', async () => {
         const outDir = join(import.meta.dirname, '..', '.tmp-minified');

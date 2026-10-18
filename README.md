@@ -14,7 +14,7 @@ three a build failure.
 npm i -D @ismailnakkar/vite-obfuscator
 ```
 
-Vite 8 and `javascript-obfuscator` 5.4.7+ are peers.
+Vite 8 and `javascript-obfuscator` 5.8.1+ are peers.
 
 ## Use
 
@@ -37,13 +37,22 @@ obfuscator({
 | `islandRoots` | Directories holding the code to protect. Required; drives the boundary guard. |
 | `apiToken` | Required for the Pro VM, *together with* `vmObfuscation`. Alone it is ignored. |
 | `vmObfuscation` | Routes marked functions through the Pro VM. Needs `apiToken`; the build refuses it without one. |
+| `vmObfuscationThreshold` | VM only (with `vmObfuscation` and `apiToken`). Defaults to 1, clamped to 0–1. |
+| `vmTargetFunctionsMode` | VM only. `'comment'` (the default here: marker-driven; upstream's default is `'root'`) or `'root'`. Even in `'root'` mode, only chunks with at least one marker reach the VM. |
+| `vmTargetFunctions`, `vmExcludeFunctions` | VM only, and only in `'root'` mode. |
+| `timeout` | VM only. The Pro API request timeout in ms. Defaults to 300000. |
+| `version` | VM only. The Pro API's obfuscator version. When unset, the API uses its latest. |
 | `rehash` | Defaults to **true**. False for a script served at a fixed URL, whose name is a contract. |
 | `mustContain` | Strings that must survive into the built chunks — a tripwire for tree-shaking. |
+| `optionsPreset` | The `javascript-obfuscator` preset everything else sits on. Defaults to `'high-obfuscation'`, which turns on controlFlowFlattening (threshold 1), deadCodeInjection, debugProtection (a 4000 ms debugger loop) and disableConsoleOutput. The plugin's own settings, then `overrides`, go on top. Turn the traps off with `overrides: {debugProtection: false, disableConsoleOutput: false}`. |
 | `overrides` | Merged last into the `javascript-obfuscator` options. |
 
 A chunk is obfuscated when at least one entry reaches it and **every** entry that reaches it is in
 `include`. So `include` must list every entry that reaches a shared chunk, or that chunk is shared
 with something un-obfuscated and gets spared.
+
+When several HTML pages load the same script, Vite drops each page's own chunk, so the pages match
+no entry. Add that script to `build.rollupOptions.input` and list it in `include`.
 
 ## VM markers
 
@@ -111,14 +120,34 @@ obfuscate in a plugin of your own.
 
 ## How it works
 
-Runs in `writeBundle`, on the files as written — Vite resolves `__VITE_PRELOAD__` after
-`generateBundle`, so obfuscating in-memory chunks corrupts it into `void 0 = x`. Obfuscated bytes
-are re-hashed and the manifest repointed, so a URL still identifies its content under `immutable`
-caching. Chunks are processed dependencies-first and importers rewritten to the new names *before*
-being obfuscated, since afterwards a specifier is hex-escaped or inside the string array. Nothing is
-written until every chunk clears every guard.
+Runs in a post-order `generateBundle`, on the chunks in memory: Vite resolves `__VITE_PRELOAD__`
+in its own normal-order `generateBundle`, so the code is final by then. Obfuscated bytes are
+re-hashed, and the new names written into the `build.manifest` file at its configured path, every
+emitted `.html` file, `build.ssrManifest` when set, and the `build.chunkImportMap` file when on, so a URL still identifies its content under
+`immutable` caching. An obfuscated chunk's sourcemap is dropped, with a warning: it maps the
+readable code, and its `sourcesContent` ships that code. Chunks are processed dependencies-first
+and importers rewritten to the new names *before* being obfuscated, since afterwards a specifier is
+hex-escaped or inside the string array. Nothing is written until every chunk clears every guard: a failure stops the build before
+Rolldown writes a file.
+
+Vite empties `outDir` before this runs. With `emptyOutDir` on, an in-place build serves no assets
+for the whole pass (minutes with the VM) and leaves the directory empty after a failure. Build into
+another directory and swap it in, or set `build.emptyOutDir: false` and prune stale assets yourself.
 
 ## Upgrading
+
+### From 3.x
+
+- Chunks are obfuscated in memory, before anything is written, so a failed build leaves no readable
+  chunk behind. Vite empties `outDir` first, so build out of place and swap
+  (`vite build --outDir dist-next && rm -rf dist && mv dist-next dist`),
+  or set `build.emptyOutDir: false` and prune.
+- 3.x with `build.sourcemap` left each obfuscated chunk's pre-rehash `.map`, readable source
+  included, in `outDir`; delete any you deployed. 4.0 drops those maps and warns once per build, so
+  no map for an obfuscated chunk reaches an error-tracker upload.
+- The `javascript-obfuscator` peer rises to ^5.8.1. Earlier releases evaluated the skipped right
+  operand of `&&`, `||` or `??` (an identifier or object literal) and shared a default-parameter
+  object across calls.
 
 ### From 2.x
 
