@@ -52,7 +52,7 @@ A chunk is obfuscated when at least one entry reaches it and **every** entry tha
 with something un-obfuscated and gets spared.
 
 When several HTML pages load the same script, Vite drops each page's own chunk, so the pages match
-no entry. Add that script to `build.rollupOptions.input` and list it in `include`.
+no entry. Add that script to `build.rolldownOptions.input` and list it in `include`.
 
 ## VM markers
 
@@ -127,8 +127,7 @@ emitted `.html` file, `build.ssrManifest` when set, and the `build.chunkImportMa
 `immutable` caching. An obfuscated chunk's sourcemap is dropped, with a warning: it maps the
 readable code, and its `sourcesContent` ships that code. Chunks are processed dependencies-first
 and importers rewritten to the new names *before* being obfuscated, since afterwards a specifier is
-hex-escaped or inside the string array. Nothing is written until every chunk clears every guard: a failure stops the build before
-Rolldown writes a file.
+hex-escaped or inside the string array. A failing guard stops the build before Rolldown writes a file.
 
 Vite empties `outDir` before this runs. With `emptyOutDir` on, an in-place build serves no assets
 for the whole pass (minutes with the VM) and leaves the directory empty after a failure. Build into

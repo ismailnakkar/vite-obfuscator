@@ -1,6 +1,6 @@
 {
     "name": "@ismailnakkar/vite-obfuscator",
-    "version": "4.0.0",
+    "version": "4.0.1",
     "description": "Vite plugin that obfuscates the shipped JS island, with guards that fail the build on silent corruption.",
     "keywords": [
         "vite",

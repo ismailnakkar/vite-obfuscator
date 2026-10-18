@@ -2,7 +2,7 @@ import {existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync}
 import {join} from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {pathToFileURL} from 'node:url';
-import {build} from 'vite';
+import {build, createBuilder} from 'vite';
 import {afterAll, describe, expect, it, vi} from 'vitest';
 import obfuscator from '../src/index.js';
 
@@ -30,6 +30,8 @@ const run = (inputs, options, outDir, minify = false, extra = {}) => build({
     },
     plugins: [obfuscator({enable: true, apiToken: '', islandRoots: [fixtures], ...options})],
 });
+
+const chunkNamed = (output, prefix) => output.find((o) => o.fileName.startsWith(`assets/${prefix}-`));
 
 /**
  * Loads a built chunk as a real ES module in a CHILD node process and reports every specifier that
@@ -85,10 +87,9 @@ describe('a renamed chunk', () => {
 
         const assets = join(outDir, 'assets');
         const files = readdirSync(assets);
-        const chunkNamed = (prefix) => output.find((o) => o.fileName.startsWith(`assets/${prefix}-`));
 
         expect(files.some((f) => f.startsWith('shared-'))).toBe(true);
-        expect(chunkNamed('pair-a').imports).toEqual([chunkNamed('shared').fileName]);
+        expect(chunkNamed(output, 'pair-a').imports).toEqual([chunkNamed(output, 'shared').fileName]);
         expect(unresolvedImportsIn(join(assets, files.find((f) => f.startsWith('pair-a-'))))).toEqual([]);
         expect(unresolvedImportsIn(join(assets, files.find((f) => f.startsWith('pair-b-'))))).toEqual([]);
     });
@@ -130,9 +131,7 @@ describe('a real build', () => {
         expect(files.filter((f) => /^lazy-.*\.js$/.test(f))).toHaveLength(1);
 
         // The import graph follows the rename, so no edge names a file that was never written.
-        const chunkNamed = (prefix) => output.find((o) => o.fileName.startsWith(`assets/${prefix}-`));
-
-        expect(chunkNamed('entry').dynamicImports).toEqual([chunkNamed('lazy').fileName]);
+        expect(chunkNamed(output, 'entry').dynamicImports).toEqual([chunkNamed(output, 'lazy').fileName]);
 
         // The bytes changed, so the URL must have changed with them. A no-op rehashedName fails here.
         expect(entryFile).not.toBe(plainName);
@@ -217,6 +216,26 @@ describe('a real build', () => {
         expect(listed).toHaveLength(2);
         expect(ssrListed.length).toBeGreaterThan(0);
         for (const file of [...listed, ...ssrListed]) expect(existsSync(join(outDir, file))).toBe(true);
+    });
+
+    // An app build sharing its config keeps the top-level config.build, which misses this path.
+    it('repoints a manifest set on the client environment', async () => {
+        const outDir = join(import.meta.dirname, '..', '.tmp-env-manifest');
+        const builder = await createBuilder({
+            root: fixtures,
+            logLevel: 'silent',
+            builder: {sharedConfigBuild: true},
+            build: {outDir, emptyOutDir: true, minify: false, rolldownOptions: {input: [join(fixtures, 'entry.js')]}},
+            environments: {client: {build: {manifest: 'env-manifest.json'}}},
+            plugins: [obfuscator({enable: true, apiToken: '', islandRoots: [fixtures], include: ['entry.js']})],
+        });
+
+        await builder.build(builder.environments.client);
+
+        const listed = Object.values(JSON.parse(readFileSync(join(outDir, 'env-manifest.json'), 'utf8'))).map((e) => e.file);
+
+        expect(listed).toHaveLength(2);
+        for (const file of listed) expect(existsSync(join(outDir, file))).toBe(true);
     });
 
     // Without this, unmatchedIncludes could be stubbed to [] — or fully inverted — and the suite

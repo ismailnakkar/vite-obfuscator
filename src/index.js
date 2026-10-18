@@ -93,8 +93,6 @@ export default function obfuscator(options = {}) {
     // construction time would use process.cwd() instead, and `vite build --root <dir>` moves one
     // and not the other — pointing every root at the wrong tree.
     let roots = [];
-    // The manifest and import map files that name chunks, at the paths Vite writes them to.
-    let manifests = [];
 
     const standardConfig = buildObfuscatorConfig({
         optionsPreset, useVM: false, vmObfuscationThreshold,
@@ -123,15 +121,6 @@ export default function obfuscator(options = {}) {
                 // A missing root stays unresolved so buildStart can still name it.
                 return existsSync(absolute) ? realpathSync(absolute) : absolute;
             });
-
-            const {manifest, ssrManifest, chunkImportMap, rolldownOptions} = config.build;
-
-            manifests = [
-                manifest === true ? '.vite/manifest.json' : manifest,
-                ssrManifest === true ? '.vite/ssr-manifest.json' : ssrManifest,
-                // As Vite's getImportMapFilename names it.
-                chunkImportMap && (rolldownOptions?.experimental?.chunkImportMap?.fileName || 'importmap.json'),
-            ].filter(Boolean);
         },
 
         buildStart() {
@@ -181,7 +170,7 @@ export default function obfuscator(options = {}) {
                               ? "include takes entry SOURCE paths as written in vite.config (e.g. 'src/widget/index.js'), not entry names. "
                               : '')
                           + (unmatched.some((p) => p.endsWith('.html'))
-                              ? 'Vite drops the chunk of an HTML page whose script another page also loads: add that script to build.rollupOptions.input and to include.'
+                              ? 'Vite drops the chunk of an HTML page whose script another page also loads: add that script to build.rolldownOptions.input and to include.'
                               : '')
                         :'Something outside the island now imports one of these, so its chunk is shared and was spared.'),
                 );
@@ -191,7 +180,7 @@ export default function obfuscator(options = {}) {
 
             console.log(`\n🔒 Obfuscating ${targets.length} chunk(s) [${useVM ? 'VM-protected where marked' : optionsPreset}]...`);
 
-            const renames = [];
+            const renames = new Map();
             let droppedMaps = 0;
 
             // Every target read up front, because mustContain is answered across all of them at once
@@ -246,7 +235,6 @@ export default function obfuscator(options = {}) {
                 );
             }
 
-            // A guard firing on chunk N aborts the build before Rolldown writes anything: nothing is half-applied.
             for (const chunk of dependenciesFirst(targets)) {
                 let code = sources.get(chunk.fileName);
 
@@ -322,23 +310,25 @@ export default function obfuscator(options = {}) {
 
                 chunk.code = result;
                 chunk.fileName = rehashed;
-                if (rehashed !== fileName) renames.push([fileName, rehashed]);
+                chunk.imports = chunk.imports.map((f) => renames.get(f) ?? f);
+                chunk.dynamicImports = chunk.dynamicImports.map((f) => renames.get(f) ?? f);
+                if (rehashed !== fileName) renames.set(fileName, rehashed);
 
                 console.log(`   ✓ ${fileName}${rehashed === fileName ? '' : ` → ${rehashed}`}${survived > 0 ? ` (${survived} VM marker(s))` : ''}`);
-            }
-
-            const renamed = new Map(renames);
-
-            for (const chunk of chunks) {
-                chunk.imports = chunk.imports.map((f) => renamed.get(f) ?? f);
-                chunk.dynamicImports = chunk.dynamicImports.map((f) => renamed.get(f) ?? f);
             }
 
             if (droppedMaps > 0) {
                 this.warn(`[Obfuscator] dropped ${droppedMaps} sourcemap(s) of obfuscated chunks: each maps the readable code, not the obfuscated output, and its sourcesContent ships that readable source.`);
             }
 
-            pointManifestAt(bundle, manifests, renames);
+            const {manifest, ssrManifest, chunkImportMap, rolldownOptions} = this.environment.config.build;
+
+            pointManifestAt(bundle, [
+                manifest === true ? '.vite/manifest.json' : manifest,
+                ssrManifest === true ? '.vite/ssr-manifest.json' : ssrManifest,
+                // As Vite's getImportMapFilename names it.
+                chunkImportMap && (rolldownOptions.experimental?.chunkImportMap?.fileName || 'importmap.json'),
+            ].filter(Boolean), renames);
 
             console.log('');
         }},
