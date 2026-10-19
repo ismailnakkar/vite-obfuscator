@@ -19,19 +19,16 @@ export function buildObfuscatorConfig(options) {
         stringArrayRotate: true,
 
         renameGlobals: true,
-        // No unicodeEscapeSequence: escape sequences are trivially reversible and measured +41% on
-        // an obfuscated chunk. The high-obfuscation preset leaves it off; so do we.
-        // Trips only when the code text is modified, so no runtime behaviour of its own — unlike
-        // debugProtection, which the preset turns ON. Override it off if that trap is unwanted.
+        // No unicodeEscapeSequence: trivially reversible, and +41% size.
+        // Breaks only if the code text is edited; unlike debugProtection, no runtime trap.
         selfDefending: true,
 
         ...(options.useVM && {
             vmObfuscation: true,
             vmObfuscationThreshold: clamp01(options.vmObfuscationThreshold),
             vmPreprocessIdentifiers: true,
-            vmTargetFunctionsMode: options.vmTargetFunctionsMode,
-            ...(options.vmTargetFunctions && {vmTargetFunctions: options.vmTargetFunctions}),
-            ...(options.vmExcludeFunctions && {vmExcludeFunctions: options.vmExcludeFunctions}),
+            // Markers only: every guard checks markers, and upstream's default 'root' selects by name.
+            vmTargetFunctionsMode: 'comment',
 
             vmDynamicOpcodes: true,
             vmOpcodeShuffle: true,

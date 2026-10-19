@@ -13,7 +13,6 @@ import {selectTargets, unmatchedIncludes} from './select.js';
 
 const PLUGIN_NAME = 'vite-obfuscator';
 const MAX_RETRIES = 3;
-const PRO_API_TIMEOUT_MS = 300_000;
 
 function parses(code) {
     try {
@@ -24,11 +23,6 @@ function parses(code) {
     }
 }
 
-/**
- * Post-order over the target graph, so a chunk is processed only after everything it imports.
- * Renaming a chunk invalidates the specifier every importer carries, and that specifier can only be
- * repaired while it is still a plain literal — before the importer is obfuscated.
- */
 function dependenciesFirst(targets) {
     const byFileName = new Map(targets.map((chunk) => [chunk.fileName, chunk]));
     const ordered = [];
@@ -38,8 +32,7 @@ function dependenciesFirst(targets) {
     const visit = (chunk) => {
         if (!chunk || done.has(chunk.fileName)) return;
 
-        // Rolldown can emit chunks that import each other. No order repairs both, so this fails
-        // loudly rather than shipping one of them with a stale specifier.
+        // Rolldown can emit chunks that import each other.
         if (visiting.has(chunk.fileName)) {
             throw new Error(`[Obfuscator] ${chunk.fileName} is in an import cycle between obfuscated chunks, which cannot be renamed safely.`);
         }
@@ -59,49 +52,29 @@ function dependenciesFirst(targets) {
 
 export default function obfuscator(options = {}) {
     const {
-        enable = true,
         include = [],
         islandRoots = [],
         apiToken = '',
         vmObfuscation = false,
         vmObfuscationThreshold = 1,
-        vmTargetFunctionsMode = 'comment',
-        vmTargetFunctions,
-        vmExcludeFunctions,
         optionsPreset = 'high-obfuscation',
         rehash = true,
-        mustContain = [],
-        timeout = PRO_API_TIMEOUT_MS,
+        timeout,
         version,
         overrides = {},
     } = options;
 
-    if (!enable) {
-        return {name: PLUGIN_NAME, apply: 'build'};
-    }
-
-    // Neither has a safe empty value. Without `include` nothing is selected and the plugin returns
-    // having obfuscated nothing; without `islandRoots` both guards compare empty sets and pass on
-    // any input. Either way an enabled build ships readable code and says nothing.
     if (include.length === 0 || islandRoots.length === 0) {
         throw new Error('[Obfuscator] include and islandRoots are both required: with either empty the plugin obfuscates nothing and both guards pass on any input.');
     }
 
     const useVM = vmObfuscation && apiToken.trim() !== '';
 
-    // Filled in configResolved, which is the first hook that knows Vite's root. Resolving at
-    // construction time would use process.cwd() instead, and `vite build --root <dir>` moves one
-    // and not the other — pointing every root at the wrong tree.
+    // Set in configResolved: roots resolve against Vite's root, which `--root` moves away from cwd.
     let roots = [];
 
-    const standardConfig = buildObfuscatorConfig({
-        optionsPreset, useVM: false, vmObfuscationThreshold,
-        vmTargetFunctionsMode, vmTargetFunctions, vmExcludeFunctions, overrides,
-    });
-    const vmConfig = buildObfuscatorConfig({
-        optionsPreset, useVM: true, vmObfuscationThreshold,
-        vmTargetFunctionsMode, vmTargetFunctions, vmExcludeFunctions, overrides,
-    });
+    const standardConfig = buildObfuscatorConfig({optionsPreset, useVM: false, vmObfuscationThreshold, overrides});
+    const vmConfig = buildObfuscatorConfig({optionsPreset, useVM: true, vmObfuscationThreshold, overrides});
 
     return {
         name: PLUGIN_NAME,
@@ -109,29 +82,20 @@ export default function obfuscator(options = {}) {
         enforce: 'post',
 
         configResolved(config) {
-            // Realpath, not just resolve: Rolldown reports module ids through the real path, so a
-            // project reached via a symlink (a CI checkout, a pnpm store, /tmp on macOS) would give
-            // roots that match no module at all — and the boundary guard would compare empty sets
-            // and pass. existsSync cannot catch that: the symlink exists.
-            //
-            // Not `.map(realpathSync)` — map passes the index as realpathSync's options argument.
-            roots = islandRoots.map((root) => {
+            // Realpath: Rolldown reports module ids by real path, so a symlinked root would match none.
+                roots = islandRoots.map((root) => {
                 const absolute = path.resolve(config.root, root);
 
-                // A missing root stays unresolved so buildStart can still name it.
+                // realpathSync throws on a missing root; buildStart reports it.
                 return existsSync(absolute) ? realpathSync(absolute) : absolute;
             });
         },
 
         buildStart() {
-            // Without a token the VM request falls back to standard obfuscation, silently.
             if (vmObfuscation && apiToken.trim() === '') {
-                this.error('[Obfuscator] vmObfuscation is on but OBFUSCATOR_API_TOKEN is empty: every marked function would ship without the VM.');
+                this.error('[Obfuscator] vmObfuscation is on but apiToken is empty: every marked function would ship without the VM.');
             }
 
-            // A root on no disk matches no module id, leaving the boundary guard comparing empty
-            // sets — the same silent pass as islandRoots: [], one typo away. The resolved absolute
-            // paths are printed so a cwd mismatch reads plainly instead of as a phantom.
             const missing = roots.filter((root) => !existsSync(root));
 
             if (missing.length > 0) {
@@ -139,18 +103,14 @@ export default function obfuscator(options = {}) {
             }
         },
 
-        // Markers are legal comments, and Rolldown drops comments while rendering chunks — before this
-        // plugin reads the rendered chunk. Without this the marker-count guard fires
-        // on every minified build. The plugin owns the precondition it depends on.
-        //
-        // Not `esbuild.legalComments`: Vite 8 deprecates that key, warns by name about the plugin
-        // that set it, and honours it nowhere the oxc minifier can see. Measured on 8.3.0 at
-        // minify:true — default comments keeps 0 markers, this keeps all of them.
+        // VM markers are legal comments, which a minified build drops without this.
+        // Not `esbuild.legalComments`: Vite 8 deprecates it and the oxc minifier ignores it.
         config() {
             return {build: {rolldownOptions: {output: {comments: {legal: true}}}}};
         },
 
-        /** Post-order generateBundle, in memory: Vite resolves __VITE_PRELOAD__ in a normal-order generateBundle, so the chunk is final here, and a this.error aborts before Rolldown writes anything. */
+        // Post: Vite resolves __VITE_PRELOAD__ in a normal-order generateBundle.
+        // An error here aborts before anything is written.
         generateBundle: {order: 'post', async handler(_outputOptions, bundle) {
             const chunks = Object.values(bundle).filter((output) => output.type === 'chunk');
             const targets = selectTargets(bundle, include);
@@ -178,18 +138,13 @@ export default function obfuscator(options = {}) {
 
             if (targets.length === 0) return;
 
-            console.log(`\n🔒 Obfuscating ${targets.length} chunk(s) [${useVM ? 'VM-protected where marked' : optionsPreset}]...`);
+            this.info(`🔒 Obfuscating ${targets.length} chunk(s) [${useVM ? 'VM-protected where marked' : optionsPreset}]...`);
 
             const renames = new Map();
             let droppedMaps = 0;
 
-            // Every target read up front, because mustContain is answered across all of them at once
-            // and has to run BEFORE any obfuscation — afterwards the identifiers it looks for are
-            // mangled and every needle would appear missing.
-            const sources = new Map();
-
+            // Check every target first, so a guard fails before any (slow, with the VM) obfuscation.
             for (const chunk of targets) {
-                const built = chunk.code;
                 const shaken = shakenMarkedExports(chunk);
 
                 if (shaken.length > 0) {
@@ -203,7 +158,7 @@ export default function obfuscator(options = {}) {
                 let misplaced;
 
                 try {
-                    misplaced = misplacedMarkers(built);
+                    misplaced = misplacedMarkers(chunk.code);
                 } catch (error) {
                     this.error(`[Obfuscator] ${chunk.fileName} does not parse before obfuscation: ${error.message}`);
                 }
@@ -221,27 +176,13 @@ export default function obfuscator(options = {}) {
                         + '  4. two markers lead the same function — keep one\n',
                     );
                 }
-
-                sources.set(chunk.fileName, restoreVmComments(built));
-            }
-
-            const absent = mustContain.filter((needle) => ![...sources.values()].some((code) => code.includes(needle)));
-
-            if (absent.length > 0) {
-                this.error(
-                    `[Obfuscator] the obfuscated chunks are missing required content: ${absent.join(', ')}.\n`
-                    + 'Code nothing imports is dropped by tree-shaking with no error of its own, so this is\n'
-                    + 'the only thing that notices. Check the keep-alive references in the entry module.',
-                );
             }
 
             for (const chunk of dependenciesFirst(targets)) {
-                let code = sources.get(chunk.fileName);
+                let code = restoreVmComments(chunk.code);
 
-                // A dependency handled earlier in this loop has a new name, and this chunk still
-                // imports the old one. Repaired here because it can only be repaired here: once
-                // obfuscated, a static specifier is hex-escaped and a dynamic one sits in the
-                // string array, where no text replacement reaches either.
+                // Repoint imports at renamed dependencies now: once obfuscated, a static specifier is
+                // hex-escaped and a dynamic one sits in the string array.
                 for (const [from, to] of renames) {
                     code = code.replaceAll(path.basename(from), path.basename(to));
                 }
@@ -261,14 +202,13 @@ export default function obfuscator(options = {}) {
                     );
                 }
 
-                // Comment mode rejects a chunk with no markers, so only a marked chunk goes to the VM.
+                // Comment mode rejects a chunk with no markers.
                 const vm = useVM && survived > 0;
                 let result = null;
                 let lastError = null;
                 let attempts = 0;
 
-                // Local attempts are retried too: with no `seed` the obfuscator draws a fresh one per
-                // run, so an output that did not parse says nothing about the next.
+                // Local runs retry too: unseeded, each run draws a fresh seed.
                 while (result === null && attempts < MAX_RETRIES) {
                     attempts++;
 
@@ -278,18 +218,18 @@ export default function obfuscator(options = {}) {
                                 code,
                                 vmConfig,
                                 {apiToken, timeout, ...(version && {version})},
-                                (message) => console.log(`   ⏳ ${chunk.fileName}: ${message}`),
+                                (message) => this.info(`⏳ ${chunk.fileName}: ${message}`),
                             )).getObfuscatedCode()
                             : JavaScriptObfuscator.obfuscate(code, standardConfig).getObfuscatedCode();
 
                         if (parses(output)) {
                             result = output;
                         } else {
-                            console.warn(`   ⚠ ${chunk.fileName}: attempt ${attempts}/${MAX_RETRIES} did not parse`);
+                            this.warn(`[Obfuscator] ${chunk.fileName}: attempt ${attempts}/${MAX_RETRIES} did not parse`);
                         }
                     } catch (error) {
                         lastError = error instanceof Error ? error : new Error(String(error));
-                        console.error(`   ✗ ${chunk.fileName}: attempt ${attempts}/${MAX_RETRIES} failed: ${lastError.message}`);
+                        this.warn(`[Obfuscator] ${chunk.fileName}: attempt ${attempts}/${MAX_RETRIES} failed: ${lastError.message}`);
                     }
                 }
 
@@ -298,8 +238,6 @@ export default function obfuscator(options = {}) {
                 }
 
                 const fileName = chunk.fileName;
-                // Opt-out for a script served at a fixed URL: its name is a contract with whoever
-                // embeds it, so it cannot be content-addressed.
                 const rehashed = rehash ? rehashedName(fileName, result) : fileName;
                 const mapName = chunk.sourcemapFileName ?? `${fileName}.map`;
 
@@ -314,7 +252,7 @@ export default function obfuscator(options = {}) {
                 chunk.dynamicImports = chunk.dynamicImports.map((f) => renames.get(f) ?? f);
                 if (rehashed !== fileName) renames.set(fileName, rehashed);
 
-                console.log(`   ✓ ${fileName}${rehashed === fileName ? '' : ` → ${rehashed}`}${survived > 0 ? ` (${survived} VM marker(s))` : ''}`);
+                this.info(`✓ ${fileName}${rehashed === fileName ? '' : ` → ${rehashed}`}${survived > 0 ? ` (${survived} VM marker(s))` : ''}`);
             }
 
             if (droppedMaps > 0) {
@@ -329,8 +267,6 @@ export default function obfuscator(options = {}) {
                 // As Vite's getImportMapFilename names it.
                 chunkImportMap && (rolldownOptions.experimental?.chunkImportMap?.fileName || 'importmap.json'),
             ].filter(Boolean), renames);
-
-            console.log('');
         }},
     };
 }

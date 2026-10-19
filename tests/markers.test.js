@@ -25,8 +25,6 @@ describe('restoreVmComments', () => {
 });
 
 describe('sourceMarkers', () => {
-    // Every module the chunk was built from, wherever it lives: the count it is compared against is
-    // taken over the whole chunk, so excluding a module here would fail a build for no reason.
     it('counts markers across every module of a chunk', () => {
         const dir = mkdtempSync(join(tmpdir(), 'obf-'));
         const island = join(dir, 'island.js');
@@ -44,8 +42,7 @@ describe('sourceMarkers', () => {
 
         writeFileSync(real, `${VM_COMMENT_LEGAL}\nexport function a() {}\n`);
 
-        // Vite's own virtual modules reach here as ids with no file. Paired with a real one so the
-        // assertion fails if the catch swallows the whole reduce rather than one entry.
+        // Paired with a real file, so a catch around the whole reduce fails this.
         expect(sourceMarkers(['\0virtual:thing', real])).toBe(1);
     });
 });

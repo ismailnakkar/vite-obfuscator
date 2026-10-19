@@ -1,7 +1,7 @@
 import {describe, expect, it} from 'vitest';
 import {buildObfuscatorConfig, clamp01} from '../src/config.js';
 
-const base = {optionsPreset: 'high-obfuscation', useVM: false, vmObfuscationThreshold: 1, vmTargetFunctionsMode: 'comment', overrides: {}};
+const base = {optionsPreset: 'high-obfuscation', useVM: false, vmObfuscationThreshold: 1, overrides: {}};
 
 describe('clamp01', () => {
     it('holds the value inside 0..1', () => {

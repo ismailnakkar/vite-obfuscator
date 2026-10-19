@@ -13,37 +13,25 @@ export function countMarkers(code, marker) {
     return code.split(marker).length - 1;
 }
 
-/**
- * The legal-form markers a chunk's own source modules carry.
- *
- * Every module, not just the ones under an islandRoot: the surviving count this is compared against
- * is taken over the whole chunk, and filtering one side of an equality is how a marked module
- * outside the roots came to fail every build. islandRoots draws the boundary guard's line and
- * nothing else.
- */
+/** Legal markers in all of a chunk's modules, island or not: the chunk-side count covers them all. */
 export function sourceMarkers(moduleIds) {
     return moduleIds.reduce((total, id) => {
         try {
             return total + countMarkers(readFileSync(id, 'utf8'), VM_COMMENT_LEGAL);
         } catch {
-            return total; // a virtual module has no file, and no markers either
+            return total; // a virtual module has no file
         }
     }, 0);
 }
 
-// A regex over the source rather than a parse: a module id can name TypeScript, JSX or a .vue file,
-// none of which acorn reads, and these declaration heads look the same in all of them. Comments after
-// the marker are skipped, as the placement guard skips them. A block comment ends at its first `*/`:
-// a lazy match would run on through code to a later one and read the next export as marked.
+// A regex, not a parse: acorn cannot read TS, JSX or .vue sources, and these heads look alike in all.
+// Skips comments after the marker; a block comment ends at its first `*/`, never a later one.
 const MARKED_EXPORT = /^(?:\s|\/\*(?:[^*]|\*(?!\/))*\*\/|\/\/.*)*export\s+(?:(default)\b|(?:async\s+)?function\b\s*\*?\s*([\p{ID_Continue}$]+)|(?:const|let|var)\s+([\p{ID_Continue}$]+))/u;
 
 /**
- * Exported functions marked in a chunk's source modules that the chunk did not render.
- *
- * Tree-shaking drops the function but keeps its legal comment, so the marker count still matches
- * and the marker now sits on whatever followed it — an unmarked function goes to the VM in its
- * place. renderedExports is the only record of the drop, and only exports appear in it: a
- * non-exported marked function dropped as unused leaves no trace here.
+ * Marked exports the chunk did not render. Tree-shaking keeps a dropped function's legal comment, so
+ * the counts still match while the marker lands on the next statement. Only exports are visible
+ * (renderedExports): a dropped non-exported function goes unseen.
  */
 export function shakenMarkedExports(chunk) {
     return chunk.moduleIds.flatMap((id) => {
@@ -56,7 +44,7 @@ export function shakenMarkedExports(chunk) {
         try {
             source = readFileSync(id, 'utf8');
         } catch {
-            return []; // a virtual module has no file, and no markers either
+            return []; // a virtual module has no file
         }
 
         return source.split(VM_COMMENT_LEGAL).slice(1)
@@ -104,12 +92,9 @@ function walk(node, visit) {
 }
 
 /**
- * Markers in a built chunk that do not lead a function of their own, with their line, column and
- * what follows.
+ * Markers that lead no function of their own, which the count guard misses.
  *
- * The count guard cannot see these: the marker is still there, just no longer on its function.
- *
- * Throws acorn's SyntaxError when the chunk does not parse.
+ * @throws {SyntaxError} acorn's, when the chunk does not parse
  */
 export function misplacedMarkers(code) {
     const comments = [];
@@ -127,7 +112,7 @@ export function misplacedMarkers(code) {
     return comments
         .filter((comment) => [VM_COMMENT_LEGAL, VM_COMMENT_STANDARD].includes(code.slice(comment.start, comment.end)))
         .flatMap((marker) => {
-            // The next code after the marker, past whitespace and any comments stacked behind it.
+            // Skip whitespace and any comments stacked after the marker.
             let at = marker.end;
 
             for (;;) {

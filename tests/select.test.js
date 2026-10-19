@@ -37,8 +37,6 @@ describe('selectTargets', () => {
         expect(selectTargets(bundle, ['resources/js/links/first.ts']).map((c) => c.fileName)).toEqual(['a.js']);
     });
 
-    // Vite deletes the facade of an HTML page whose script another page shares: main.js is left a
-    // non-entry chunk that no entry reaches, yet it still loads lazy.js under the old name.
     it('spares a chunk that a chunk nothing imports also reaches', () => {
         const bundle = {
             'main.js': chunk('main.js', {imports: ['lazy.js']}),
@@ -60,8 +58,6 @@ describe('selectTargets', () => {
 });
 
 describe('entry matching is segment-bounded', () => {
-    // A bare endsWith makes 'first.js' match '…/not-first.js', so one typo silently obfuscates an
-    // entry nobody meant to protect — or, worse, the public site's.
     it('does not let a short include match a longer filename', () => {
         const bundle = {
             'a.js': chunk('a.js', {isEntry: true, facadeModuleId: '/app/resources/js/not-first.js'}),

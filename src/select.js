@@ -1,20 +1,10 @@
 const normalize = (p) => p.replaceAll('\\', '/');
 
-/**
- * An include path matches an entry only on a full path SEGMENT boundary: a bare `endsWith` let
- * 'first.js' match '…/not-first.js', quietly obfuscating an entry nobody named.
- *
- * It is still a suffix match, not an exact one — 'app.js' matches any entry called app.js at any
- * depth. Write enough of the path to be unambiguous. Used by both matchers below so they cannot
- * disagree about what is included.
- */
+// Suffix match on whole segments: 'first.js' matches '…/x/first.js', not '…/not-first.js'.
+// Shared by both matchers so they agree.
 const matchesEntry = (id, wanted) => id === wanted || id.endsWith(`/${wanted}`);
 
-/**
- * A chunk is a target when at least one entry reaches it and EVERY entry that reaches it is an
- * included entry. A chunk shared with a non-included entry is spared, because obfuscating it would
- * obfuscate code the public site also runs.
- */
+/** Chunks reached by at least one entry, and only by included ones. */
 export function selectTargets(bundle, include) {
     const wanted = include.map(normalize);
     const chunks = Object.values(bundle).filter((output) => output.type === 'chunk');
@@ -25,9 +15,9 @@ export function selectTargets(bundle, include) {
         && wanted.some((path) => matchesEntry(normalize(chunk.facadeModuleId), path));
 
     const reachedBy = new Map();
-    // A chunk nothing imports is seeded like an entry. Vite deletes the facade chunk of an HTML page
-    // whose script another page shares, leaving that script a non-entry chunk no entry reaches;
-    // unseeded, a chunk only it reaches would read as included-only, be renamed, and 404 from it.
+    // Seed unimported chunks too: Vite drops the facade of an HTML page whose script another page
+    // shares, and that orphan script's imports would otherwise read as included-only, be renamed,
+    // and 404.
     const imported = new Set(chunks.flatMap((c) => [...c.imports, ...c.dynamicImports]));
 
     for (const entry of chunks.filter((c) => c.isEntry || !imported.has(c.fileName))) {
@@ -52,10 +42,7 @@ export function selectTargets(bundle, include) {
     });
 }
 
-/**
- * The include paths that match no build entry — a typo, or entry NAMES instead of source paths.
- * The inverse of the reachability match above; kept beside it so the two cannot drift apart.
- */
+/** Include paths that match no entry: a typo, or entry names instead of source paths. */
 export function unmatchedIncludes(bundle, include) {
     const ids = Object.values(bundle)
         .filter((o) => o.type === 'chunk' && o.isEntry && o.facadeModuleId !== null)
