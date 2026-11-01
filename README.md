@@ -48,6 +48,7 @@ no entry. Add that script to `build.rolldownOptions.input` and to `include`.
 | `timeout` | upstream's | VM only. Pro API request timeout in ms. |
 | `version` | latest | VM only. The obfuscator version the Pro API runs. |
 | `rehash` | `true` | Renames each obfuscated chunk after a hash of its new bytes. `false` for a script served at a fixed URL. |
+| `maxGzipBytes` | `0` | Fails the build when an obfuscated chunk gzips to more bytes than this. `0` is off; each chunk's raw and gzip sizes are logged either way. |
 | `optionsPreset` | `'high-obfuscation'` | `javascript-obfuscator` preset, under the plugin's own settings. |
 | `overrides` | `{}` | `javascript-obfuscator` options, merged last. |
 

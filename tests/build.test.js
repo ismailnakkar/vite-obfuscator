@@ -2,6 +2,7 @@ import {existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync}
 import {join} from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {pathToFileURL} from 'node:url';
+import {gzipSync} from 'node:zlib';
 import {build, createBuilder} from 'vite';
 import {afterAll, describe, expect, it, vi} from 'vitest';
 import obfuscator from '../src/index.js';
@@ -364,6 +365,95 @@ describe('rehash: false', () => {
 
         expect(entryFile).toBe(plainName);
         expect(readFileSync(join(assets, entryFile), 'utf8')).toMatch(/_0x[0-9a-f]+/);
+    });
+});
+
+describe('the size report', () => {
+    const kb = (bytes) => `${+(bytes / 1e3).toFixed(1)} KB`;
+
+    const logInto = (logs) => ({
+        rollupOptions: {input: [join(fixtures, 'entry.js')], onLog: (_level, log) => logs.push(log.message)},
+    });
+
+    it('logs raw and gzip size for each obfuscated chunk', async () => {
+        const logs = [];
+        const readable = new Map();
+
+        const {output} = await build({
+            root: fixtures,
+            logLevel: 'silent',
+            build: {outDir: join(repoRoot, '.tmp-size'), emptyOutDir: true, minify: false, ...logInto(logs)},
+            plugins: [
+                // Post, so Vite has resolved __VITE_PRELOAD__; listed first, so it runs before the obfuscator.
+                {
+                    name: 'keep-readable',
+                    generateBundle: {order: 'post', handler(_options, bundle) {
+                        for (const {fileName, code} of Object.values(bundle)) readable.set(fileName, code);
+                    }},
+                },
+                obfuscator({apiToken: '', islandRoots: [fixtures], include: ['entry.js'], rehash: false}),
+            ],
+        });
+
+        const chunks = output.filter((o) => o.type === 'chunk');
+
+        expect(chunks).toHaveLength(2);
+
+        for (const {fileName, code} of chunks) {
+            const before = readable.get(fileName);
+
+            expect(logs).toContain(
+                `[Obfuscator] ${fileName} ${kb(Buffer.byteLength(before))} -> ${kb(Buffer.byteLength(code))}`
+                + ` (gzip ${kb(gzipSync(before).length)} -> ${kb(gzipSync(code).length)})`,
+            );
+        }
+    });
+
+    it('fails the build naming the chunk when gzip exceeds maxGzipBytes', async () => {
+        const outDir = join(repoRoot, '.tmp-budget');
+
+        await expect(
+            run(['entry.js'], {include: ['entry.js'], maxGzipBytes: 1}, outDir),
+        ).rejects.toThrow(/assets\/(entry|lazy)-\S+\.js is \d+ bytes gzipped, over maxGzipBytes \(1\)/);
+
+        expect(existsSync(join(outDir, 'assets'))).toBe(false);
+
+        // Over each chunk's gzip size, under its raw size.
+        await expect(
+            run(['entry.js'], {include: ['entry.js'], maxGzipBytes: 60_000}, outDir),
+        ).resolves.toBeDefined();
+    });
+
+    it('does not check size when maxGzipBytes is 0', async () => {
+        const logs = [];
+
+        await expect(
+            run(['entry.js'], {include: ['entry.js'], maxGzipBytes: 0}, join(repoRoot, '.tmp-budget-off'), false, logInto(logs)),
+        ).resolves.toBeDefined();
+
+        expect(logs.filter((message) => message.includes(' (gzip '))).toHaveLength(2);
+    });
+
+    it('prints a chunk of a million bytes or more in MB', async () => {
+        vi.resetModules();
+
+        vi.doMock('javascript-obfuscator', () => ({
+            default: {obfuscate: () => ({getObfuscatedCode: () => `"${'x'.repeat(1_849_998)}"`})},
+        }));
+
+        const {default: mocked} = await import('../src/index.js');
+        const logs = [];
+
+        await build({
+            root: fixtures,
+            logLevel: 'silent',
+            build: {outDir: join(repoRoot, '.tmp-size-mb'), emptyOutDir: true, minify: false, ...logInto(logs)},
+            plugins: [mocked({apiToken: '', islandRoots: [fixtures], include: ['entry.js']})],
+        });
+
+        expect(logs.filter((message) => message.includes(' -> 1.85 MB (gzip '))).toHaveLength(2);
+
+        vi.doUnmock('javascript-obfuscator');
     });
 });
 

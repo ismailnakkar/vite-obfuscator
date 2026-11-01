@@ -2,6 +2,7 @@ import {parse} from 'acorn';
 import JavaScriptObfuscator from 'javascript-obfuscator';
 import {existsSync, realpathSync} from 'node:fs';
 import path from 'node:path';
+import {gzipSync} from 'node:zlib';
 import {buildObfuscatorConfig} from './config.js';
 import {leakedIslandModules} from './guards.js';
 import {pointManifestAt} from './manifest.js';
@@ -21,6 +22,10 @@ function parses(code) {
     } catch {
         return false;
     }
+}
+
+function formatSize(bytes) {
+    return bytes >= 1e6 ? `${+(bytes / 1e6).toFixed(2)} MB` : `${+(bytes / 1e3).toFixed(1)} KB`;
 }
 
 function dependenciesFirst(targets) {
@@ -59,6 +64,7 @@ export default function obfuscator(options = {}) {
         vmObfuscationThreshold = 1,
         optionsPreset = 'high-obfuscation',
         rehash = true,
+        maxGzipBytes = 0,
         timeout,
         version,
         overrides = {},
@@ -235,6 +241,14 @@ export default function obfuscator(options = {}) {
 
                 if (result === null) {
                     this.error(`[Obfuscator] ${chunk.fileName} could not be obfuscated after ${attempts} attempt(s)${lastError ? `: ${lastError.message}` : ': the output did not parse'}`);
+                }
+
+                const gzipBytes = gzipSync(result).length;
+
+                this.info(`[Obfuscator] ${chunk.fileName} ${formatSize(Buffer.byteLength(chunk.code))} -> ${formatSize(Buffer.byteLength(result))} (gzip ${formatSize(gzipSync(chunk.code).length)} -> ${formatSize(gzipBytes)})`);
+
+                if (maxGzipBytes > 0 && gzipBytes > maxGzipBytes) {
+                    this.error(`[Obfuscator] ${chunk.fileName} is ${gzipBytes} bytes gzipped, over maxGzipBytes (${maxGzipBytes}).`);
                 }
 
                 const fileName = chunk.fileName;
