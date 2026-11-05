@@ -1,58 +1,22 @@
-import {parse} from 'acorn';
-import JavaScriptObfuscator from 'javascript-obfuscator';
 import {existsSync, realpathSync} from 'node:fs';
 import path from 'node:path';
 import {gzipSync} from 'node:zlib';
 import {buildObfuscatorConfig} from './config.js';
-import {leakedIslandModules} from './guards.js';
+import {leakedIslandModules, leakedMessage} from './guards.js';
 import {pointManifestAt} from './manifest.js';
 import {
     VM_COMMENT_STANDARD, countMarkers, misplacedMarkers, restoreVmComments, shakenMarkedExports, sourceMarkers,
 } from './markers.js';
+import {obfuscateUntilItParses} from './obfuscate.js';
+import {dependenciesFirst} from './order.js';
 import {rehashedName} from './rehash.js';
 import {selectTargets, unmatchedIncludes} from './select.js';
+import {spareNodeModules} from './spare.js';
 
 const PLUGIN_NAME = 'vite-obfuscator';
-const MAX_RETRIES = 3;
-
-function parses(code) {
-    try {
-        parse(code, {ecmaVersion: 'latest', sourceType: 'module'});
-        return true;
-    } catch {
-        return false;
-    }
-}
 
 function formatSize(bytes) {
     return bytes >= 1e6 ? `${+(bytes / 1e6).toFixed(2)} MB` : `${+(bytes / 1e3).toFixed(1)} KB`;
-}
-
-function dependenciesFirst(targets) {
-    const byFileName = new Map(targets.map((chunk) => [chunk.fileName, chunk]));
-    const ordered = [];
-    const done = new Set();
-    const visiting = new Set();
-
-    const visit = (chunk) => {
-        if (!chunk || done.has(chunk.fileName)) return;
-
-        // Rolldown can emit chunks that import each other.
-        if (visiting.has(chunk.fileName)) {
-            throw new Error(`[Obfuscator] ${chunk.fileName} is in an import cycle between obfuscated chunks, which cannot be renamed safely.`);
-        }
-
-        visiting.add(chunk.fileName);
-        for (const fileName of [...chunk.imports, ...chunk.dynamicImports]) visit(byFileName.get(fileName));
-        visiting.delete(chunk.fileName);
-
-        done.add(chunk.fileName);
-        ordered.push(chunk);
-    };
-
-    targets.forEach(visit);
-
-    return ordered;
 }
 
 export default function obfuscator(options = {}) {
@@ -62,7 +26,9 @@ export default function obfuscator(options = {}) {
         apiToken = '',
         vmObfuscation = false,
         vmObfuscationThreshold = 1,
-        optionsPreset = 'high-obfuscation',
+        optionsPreset = 'low-obfuscation',
+        spareNodeModules: spareVendor = false,
+        seed,
         rehash = true,
         maxGzipBytes = 0,
         timeout,
@@ -79,8 +45,9 @@ export default function obfuscator(options = {}) {
     // Set in configResolved: roots resolve against Vite's root, which `--root` moves away from cwd.
     let roots = [];
 
-    const standardConfig = buildObfuscatorConfig({optionsPreset, useVM: false, vmObfuscationThreshold, overrides});
-    const vmConfig = buildObfuscatorConfig({optionsPreset, useVM: true, vmObfuscationThreshold, overrides});
+    const configFor = (useVM) => buildObfuscatorConfig({optionsPreset, useVM, vmObfuscationThreshold, seed, overrides});
+    const standardConfig = configFor(false);
+    const vmConfig = configFor(true);
 
     return {
         name: PLUGIN_NAME,
@@ -89,7 +56,7 @@ export default function obfuscator(options = {}) {
 
         configResolved(config) {
             // Realpath: Rolldown reports module ids by real path, so a symlinked root would match none.
-                roots = islandRoots.map((root) => {
+            roots = islandRoots.map((root) => {
                 const absolute = path.resolve(config.root, root);
 
                 // realpathSync throws on a missing root; buildStart reports it.
@@ -124,22 +91,7 @@ export default function obfuscator(options = {}) {
             const leaked = leakedIslandModules(chunks, targets, roots);
 
             if (leaked.length > 0) {
-                const unmatched = unmatchedIncludes(bundle, include);
-
-                this.error(
-                    `[Obfuscator] ${leaked.length} module(s) under ${islandRoots.join(', ')} are bundled but NOT obfuscated:\n`
-                    + leaked.map((id) => `    ${id}`).join('\n') + '\n\n'
-                    + 'A chunk is obfuscated only when EVERY entry that reaches it is an included entry.\n'
-                    + (unmatched.length > 0
-                        ? `But these include paths match no build entry: ${unmatched.join(', ')}. `
-                          + (unmatched.some((p) => !p.endsWith('.html'))
-                              ? "include takes entry SOURCE paths as written in vite.config (e.g. 'src/widget/index.js'), not entry names. "
-                              : '')
-                          + (unmatched.some((p) => p.endsWith('.html'))
-                              ? 'Vite drops the chunk of an HTML page whose script another page also loads: add that script to build.rolldownOptions.input and to include.'
-                              : '')
-                        :'Something outside the island now imports one of these, so its chunk is shared and was spared.'),
-                );
+                this.error(leakedMessage(leaked, unmatchedIncludes(bundle, include), islandRoots));
             }
 
             if (targets.length === 0) return;
@@ -148,6 +100,8 @@ export default function obfuscator(options = {}) {
 
             const renames = new Map();
             let droppedMaps = 0;
+
+            let spared = 0;
 
             // Check every target first, so a guard fails before any (slow, with the VM) obfuscation.
             for (const chunk of targets) {
@@ -182,6 +136,21 @@ export default function obfuscator(options = {}) {
                         + '  4. two markers lead the same function — keep one\n',
                     );
                 }
+
+                if (spareVendor) {
+                    const result = spareNodeModules(chunk.code);
+
+                    chunk.code = result.code;
+                    spared += result.spans;
+                }
+            }
+
+            if (spareVendor && spared === 0) {
+                this.error(
+                    '[Obfuscator] spareNodeModules is on but no node_modules module was found in any obfuscated chunk.\n'
+                    + 'Rolldown marks module boundaries with comments, which a minified chunk loses: set build.minify to false,\n'
+                    + 'or set spareNodeModules to false if the chunks bundle no node_modules code.',
+                );
             }
 
             for (const chunk of dependenciesFirst(targets)) {
@@ -209,38 +178,21 @@ export default function obfuscator(options = {}) {
                 }
 
                 // Comment mode rejects a chunk with no markers.
-                const vm = useVM && survived > 0;
-                let result = null;
-                let lastError = null;
-                let attempts = 0;
+                const pro = useVM && survived > 0;
+                let result;
 
-                // Local runs retry too: unseeded, each run draws a fresh seed.
-                while (result === null && attempts < MAX_RETRIES) {
-                    attempts++;
-
-                    try {
-                        const output = vm
-                            ? (await JavaScriptObfuscator.obfuscatePro(
-                                code,
-                                vmConfig,
-                                {apiToken, timeout, ...(version && {version})},
-                                (message) => this.info(`⏳ ${chunk.fileName}: ${message}`),
-                            )).getObfuscatedCode()
-                            : JavaScriptObfuscator.obfuscate(code, standardConfig).getObfuscatedCode();
-
-                        if (parses(output)) {
-                            result = output;
-                        } else {
-                            this.warn(`[Obfuscator] ${chunk.fileName}: attempt ${attempts}/${MAX_RETRIES} did not parse`);
-                        }
-                    } catch (error) {
-                        lastError = error instanceof Error ? error : new Error(String(error));
-                        this.warn(`[Obfuscator] ${chunk.fileName}: attempt ${attempts}/${MAX_RETRIES} failed: ${lastError.message}`);
-                    }
-                }
-
-                if (result === null) {
-                    this.error(`[Obfuscator] ${chunk.fileName} could not be obfuscated after ${attempts} attempt(s)${lastError ? `: ${lastError.message}` : ': the output did not parse'}`);
+                try {
+                    result = await obfuscateUntilItParses({
+                        code,
+                        config: pro ? vmConfig : standardConfig,
+                        pro: pro && {
+                            options: {apiToken, timeout, ...(version && {version})},
+                            progress: (message) => this.info(`⏳ ${chunk.fileName}: ${message}`),
+                        },
+                        log: (message) => this.warn(`[Obfuscator] ${chunk.fileName}: ${message}`),
+                    });
+                } catch (error) {
+                    this.error(`[Obfuscator] ${chunk.fileName} ${error.message}`);
                 }
 
                 const gzipBytes = gzipSync(result).length;

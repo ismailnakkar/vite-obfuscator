@@ -2,30 +2,24 @@ export function clamp01(value) {
     return Math.max(0, Math.min(1, value));
 }
 
-export function buildObfuscatorConfig(options) {
+/**
+ * The preset decides; this adds only what is unsafe on a page the app does not own (no console
+ * stubbing, no debugger trap, no self-defending, no eval) and the VM options. `overrides` win over all of it.
+ */
+export function buildObfuscatorConfig({optionsPreset, useVM, vmObfuscationThreshold, seed, overrides}) {
     return {
-        optionsPreset: options.optionsPreset,
-        target: 'browser',
+        optionsPreset,
+        target: 'browser-no-eval',
+        disableConsoleOutput: false,
+        debugProtection: false,
+        debugProtectionInterval: 0,
+        selfDefending: false,
 
-        compact: true,
-        simplify: true,
-        numbersToExpressions: true,
-        splitStrings: true,
-        transformObjectKeys: true,
-        stringArray: true,
-        stringArrayThreshold: 1,
-        stringArrayEncoding: ['rc4'],
-        stringArrayShuffle: true,
-        stringArrayRotate: true,
+        ...(seed !== undefined && {seed}),
 
-        renameGlobals: true,
-        // No unicodeEscapeSequence: trivially reversible, and +41% size.
-        // Breaks only if the code text is edited; unlike debugProtection, no runtime trap.
-        selfDefending: true,
-
-        ...(options.useVM && {
+        ...(useVM && {
             vmObfuscation: true,
-            vmObfuscationThreshold: clamp01(options.vmObfuscationThreshold),
+            vmObfuscationThreshold: clamp01(vmObfuscationThreshold),
             vmPreprocessIdentifiers: true,
             // Markers only: every guard checks markers, and upstream's default 'root' selects by name.
             vmTargetFunctionsMode: 'comment',
@@ -40,6 +34,6 @@ export function buildObfuscatorConfig(options) {
             vmRandomizeKeys: true,
         }),
 
-        ...options.overrides,
+        ...overrides,
     };
 }

@@ -49,11 +49,20 @@ no entry. Add that script to `build.rolldownOptions.input` and to `include`.
 | `version` | latest | VM only. The obfuscator version the Pro API runs. |
 | `rehash` | `true` | Renames each obfuscated chunk after a hash of its new bytes. `false` for a script served at a fixed URL. |
 | `maxGzipBytes` | `0` | Fails the build when an obfuscated chunk gzips to more bytes than this. `0` is off; each chunk's raw and gzip sizes are logged either way. |
-| `optionsPreset` | `'high-obfuscation'` | `javascript-obfuscator` preset, under the plugin's own settings. |
-| `overrides` | `{}` | `javascript-obfuscator` options, merged last. |
+| `optionsPreset` | `'low-obfuscation'` | `javascript-obfuscator` preset. It decides every option the plugin does not set below. |
+| `spareNodeModules` | `false` | Opt-in: leaves `node_modules` code unobfuscated, for an obfuscated chunk that bundles it: it is public on npm, and obfuscating it only grows the bundle. Fails the build if no `node_modules` module is found, which includes a minified chunk (Rolldown marks module boundaries with comments a minifier drops): set `build.minify: false`, or this to `false`. Module paths must use `/` separators, as on Linux and macOS builds. |
+| `seed` | unset | `javascript-obfuscator` seed, for byte-identical rebuilds; non-zero, since upstream treats `0` as unseeded. It also makes the three parse retries identical. |
+| `overrides` | `{}` | `javascript-obfuscator` options, merged last: they win over the preset and the settings below. |
 
-`high-obfuscation` turns on `debugProtection` (a 4000 ms debugger loop) and `disableConsoleOutput`.
-Turn them off with `overrides: {debugProtection: false, disableConsoleOutput: false}`.
+The plugin sets only what is unsafe on a page the app does not own, and `overrides` can change it:
+`target: 'browser-no-eval'`, `disableConsoleOutput: false`, `debugProtection: false`,
+`debugProtectionInterval: 0`, `selfDefending: false`. The VM options are added when `vmObfuscation` is on.
+
+`low-obfuscation` itself turns on `selfDefending`, so the plugin turns it off. That option and
+`debugProtection` break under automated browsers and open devtools, and a script that does analytics
+or bot detection must still run there. Turn either on with `overrides`. Measure gzip when changing preset (`maxGzipBytes`
+fails the build on a regression): in one measurement on a tracker, `high-obfuscation` was 159.6 KB and
+`low-obfuscation` 33.3 KB.
 
 ## VM markers
 
@@ -114,6 +123,22 @@ The plugin runs only in `vite build`, so app tests need no fake or setup. This p
 `npm test`.
 
 ## Upgrading
+
+### From 5.x
+
+6.0 lets the preset decide and gives safe defaults. Per option, keep the old behaviour with:
+
+- Forced options gone: the plugin no longer sets `numbersToExpressions`, `splitStrings`,
+  `transformObjectKeys`, `stringArrayThreshold: 1`, `stringArrayEncoding: ['rc4']`, `renameGlobals`, `compact`, `simplify`, `stringArray`
+  over the preset. Set any you want in `overrides`, or use
+  `optionsPreset: 'high-obfuscation'`, which sets most of them.
+- `optionsPreset` defaults to `'low-obfuscation'`, was `'high-obfuscation'`. Output is much smaller
+  and easier to read; pass the old preset and set `renameGlobals: true` in `overrides` to approximate it.
+- `target` is `'browser-no-eval'`, was `'browser'`. `disableConsoleOutput`, `debugProtection`, `debugProtectionInterval`
+  and `selfDefending` are off, where the old default preset turned them on. Override to restore.
+- New opt-in `spareNodeModules: true` leaves `node_modules` code in an obfuscated chunk unobfuscated.
+  A local plugin that wraps those spans in `javascript-obfuscator:disable` comments can be replaced by it.
+- The VM options are unchanged and `vmObfuscation` is still opt-in; the base preset changes above apply to VM builds too.
 
 ### From 4.x
 

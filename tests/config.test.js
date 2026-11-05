@@ -1,7 +1,7 @@
 import {describe, expect, it} from 'vitest';
 import {buildObfuscatorConfig, clamp01} from '../src/config.js';
 
-const base = {optionsPreset: 'high-obfuscation', useVM: false, vmObfuscationThreshold: 1, overrides: {}};
+const base = {optionsPreset: 'low-obfuscation', useVM: false, vmObfuscationThreshold: 1, overrides: {}};
 
 describe('clamp01', () => {
     it('holds the value inside 0..1', () => {
@@ -12,12 +12,32 @@ describe('clamp01', () => {
 });
 
 describe('buildObfuscatorConfig', () => {
-    it('emits no vm options when the VM is off', () => {
+    it('lets the preset decide: none of the old forced options appear', () => {
         const config = buildObfuscatorConfig(base);
 
-        expect(config.vmObfuscation).toBeUndefined();
-        expect(config.stringArrayEncoding).toEqual(['rc4']);
-        expect(config.selfDefending).toBe(true);
+        expect(config.optionsPreset).toBe('low-obfuscation');
+        for (const key of [
+            'numbersToExpressions', 'splitStrings', 'transformObjectKeys', 'stringArray', 'stringArrayThreshold',
+            'stringArrayEncoding', 'renameGlobals', 'compact', 'simplify', 'vmObfuscation',
+        ]) {
+            expect(config, key).not.toHaveProperty(key);
+        }
+    });
+
+    it('is safe on a page the app does not own', () => {
+        expect(buildObfuscatorConfig(base)).toMatchObject({
+            target: 'browser-no-eval',
+            disableConsoleOutput: false,
+            debugProtection: false,
+            debugProtectionInterval: 0,
+            selfDefending: false,
+        });
+    });
+
+    it('passes a seed through, and only when given', () => {
+        expect(buildObfuscatorConfig({...base, seed: 7}).seed).toBe(7);
+        expect(buildObfuscatorConfig({...base, seed: 0}).seed).toBe(0);
+        expect(buildObfuscatorConfig(base)).not.toHaveProperty('seed');
     });
 
     it('emits vm options when the VM is on', () => {
@@ -29,6 +49,10 @@ describe('buildObfuscatorConfig', () => {
     });
 
     it('lets overrides win over every default', () => {
-        expect(buildObfuscatorConfig({...base, overrides: {selfDefending: false}}).selfDefending).toBe(false);
+        const config = buildObfuscatorConfig({
+            ...base, overrides: {selfDefending: true, target: 'browser', debugProtection: true},
+        });
+
+        expect(config).toMatchObject({selfDefending: true, target: 'browser', debugProtection: true});
     });
 });
