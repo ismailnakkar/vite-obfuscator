@@ -16,15 +16,12 @@ function parses(code) {
  * Obfuscates `code` until the output parses, at most three times: unseeded, each run draws a fresh
  * seed. Throws the last failure.
  */
-export async function obfuscateUntilItParses({code, config, pro, log}) {
+export function obfuscateUntilItParses({code, config, log}) {
     let lastError = null;
 
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
         try {
-            const result = pro
-                ? await JavaScriptObfuscator.obfuscatePro(code, config, pro.options, pro.progress)
-                : JavaScriptObfuscator.obfuscate(code, config);
-            const output = result.getObfuscatedCode();
+            const output = JavaScriptObfuscator.obfuscate(code, config).getObfuscatedCode();
 
             if (parses(output)) return output;
 

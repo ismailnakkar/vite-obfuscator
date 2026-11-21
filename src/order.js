@@ -10,7 +10,7 @@ export function dependenciesFirst(targets) {
 
         // Rolldown can emit chunks that import each other.
         if (visiting.has(chunk.fileName)) {
-            throw new Error(`[Obfuscator] ${chunk.fileName} is in an import cycle between obfuscated chunks, which cannot be renamed safely.`);
+            throw new Error(`${chunk.fileName} is in an import cycle between obfuscated chunks, which cannot be renamed safely.`);
         }
 
         visiting.add(chunk.fileName);

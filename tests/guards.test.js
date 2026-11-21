@@ -30,6 +30,13 @@ describe('leakedIslandModules', () => {
         expect(leakedIslandModules([sibling], [], ['/app/resources/js/links'])).toEqual([]);
     });
 
+    it('reads a root resolved with Windows separators', () => {
+        const shared = chunk('shared.js', ['C:/app/resources/js/links/dom.ts']);
+
+        expect(leakedIslandModules([shared], [], ['C:\\app\\resources\\js\\links']))
+            .toEqual(['C:/app/resources/js/links/dom.ts']);
+    });
+
     it('treats a module covered by any target as covered', () => {
         const a = chunk('a.js', ['/app/resources/js/links/dom.ts']);
         const b = chunk('b.js', ['/app/resources/js/links/dom.ts']);

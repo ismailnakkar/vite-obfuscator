@@ -2,7 +2,7 @@ import {join} from 'node:path';
 import {describe, expect, it} from 'vitest';
 import obfuscator from '../src/index.js';
 
-const base = {include: ['resources/js/a.js'], islandRoots: ['src'], apiToken: ''};
+const base = {include: ['resources/js/a.js'], islandRoots: ['src']};
 
 describe('the plugin', () => {
     it('is a post-enforced build plugin', () => {
@@ -11,12 +11,17 @@ describe('the plugin', () => {
         expect(plugin.name).toBe('vite-obfuscator');
         expect(plugin.apply).toBe('build');
         expect(plugin.enforce).toBe('post');
+        // 6.x set build.rolldownOptions.output.comments to keep VM markers; 7.0 leaves Vite's config alone.
+        expect(plugin).not.toHaveProperty('config');
     });
 
+    // Thrown before Vite has a plugin context to prefix it, so it carries its own.
     it('refuses to be constructed without include or islandRoots', () => {
-        expect(() => obfuscator({...base, include: []})).toThrow(/both required/);
-        expect(() => obfuscator({...base, islandRoots: []})).toThrow(/both required/);
-        expect(() => obfuscator({})).toThrow(/both required/);
+        const refusal = '[Obfuscator] include and islandRoots are both required: with either empty the plugin obfuscates nothing and the boundary guard passes on any input.';
+
+        expect(() => obfuscator({...base, include: []})).toThrow(refusal);
+        expect(() => obfuscator({...base, islandRoots: []})).toThrow(refusal);
+        expect(() => obfuscator({})).toThrow(refusal);
     });
 
     it('refuses a root that is not on disk', () => {
@@ -26,8 +31,10 @@ describe('the plugin', () => {
         plugin.configResolved({root: process.cwd()});
         plugin.buildStart.call({error: (m) => errors.push(m)});
 
-        expect(errors).toHaveLength(1);
-        expect(errors[0]).toContain('no/such/dir');
+        // Unprefixed: Vite adds `[plugin vite-obfuscator]`.
+        expect(errors).toEqual([
+            `islandRoots not found on disk: ${join(process.cwd(), 'no/such/dir')}. A root that matches no module silently disables the boundary guard — check the path.`,
+        ]);
     });
 
     it('resolves islandRoots against Vite\'s root, not the working directory', () => {
@@ -39,16 +46,5 @@ describe('the plugin', () => {
         plugin.buildStart.call({error: (m) => errors.push(m)});
 
         expect(errors).toEqual([]);
-    });
-
-    it('refuses a VM build with no API token, rather than silently downgrading', () => {
-        const plugin = obfuscator({...base, vmObfuscation: true});
-        const errors = [];
-
-        plugin.configResolved({root: process.cwd()});
-        plugin.buildStart.call({error: (m) => errors.push(m)});
-
-        expect(errors).toHaveLength(1);
-        expect(errors[0]).toContain('apiToken is empty');
     });
 });

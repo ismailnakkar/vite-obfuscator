@@ -23,7 +23,7 @@ describe('a project reached through a symlink', () => {
                 minify: false,
                 rolldownOptions: {input: [join(linked, 'entry.js'), join(linked, 'site.js')]},
             },
-            plugins: [obfuscator({apiToken: '', islandRoots: [linked], include: ['entry.js']})],
+            plugins: [obfuscator({islandRoots: [linked], include: ['entry.js']})],
         })).rejects.toThrow(/are bundled but NOT obfuscated/);
     });
 });

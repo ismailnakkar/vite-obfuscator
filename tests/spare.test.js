@@ -64,14 +64,18 @@ async function buildApp(options, minify = false) {
     const {output} = await build({
         root: app,
         logLevel: 'silent',
-        build: {write: false, minify, rollupOptions: {input: [join(app, 'entry.js')]}},
-        plugins: [obfuscator({apiToken: '', islandRoots: [app], include: ['entry.js'], rehash: false, ...options})],
+        build: {write: false, minify, rolldownOptions: {input: [join(app, 'entry.js')]}},
+        plugins: [obfuscator({islandRoots: [app], include: ['entry.js'], rehash: false, ...options})],
     });
 
     return output.find((o) => o.type === 'chunk').code;
 }
 
 describe('spareNodeModules in a build', () => {
+    const nothingSpared = '\nRolldownError: spareNodeModules is on but no node_modules module was found in any obfuscated chunk.\n'
+        + 'Rolldown marks module boundaries with comments, which a minified chunk loses: set build.minify to false,\n'
+        + 'or set spareNodeModules to false if the chunks bundle no node_modules code.';
+
     it('leaves node_modules code readable and obfuscates the rest, when on', async () => {
         const code = await buildApp({spareNodeModules: true, overrides: {stringArrayThreshold: 1}});
 
@@ -91,13 +95,13 @@ describe('spareNodeModules in a build', () => {
         await expect(build({
             root: fixtures,
             logLevel: 'silent',
-            build: {write: false, minify: false, rollupOptions: {input: [join(fixtures, 'entry.js')]}},
-            plugins: [obfuscator({apiToken: '', islandRoots: [fixtures], include: ['entry.js'], rehash: false, spareNodeModules: true})],
-        })).rejects.toThrow(/spareNodeModules is on but no node_modules module was found/);
+            build: {write: false, minify: false, rolldownOptions: {input: [join(fixtures, 'entry.js')]}},
+            plugins: [obfuscator({islandRoots: [fixtures], include: ['entry.js'], rehash: false, spareNodeModules: true})],
+        })).rejects.toThrow(nothingSpared);
     });
 
     it('fails the build on a minified chunk, which has lost its module headers', async () => {
-        await expect(buildApp({spareNodeModules: true}, true)).rejects.toThrow(/spareNodeModules is on/);
+        await expect(buildApp({spareNodeModules: true}, true)).rejects.toThrow(nothingSpared);
     });
 });
 
@@ -116,8 +120,8 @@ describe('the defaults reaching the obfuscator', () => {
         await build({
             root: fixtures,
             logLevel: 'silent',
-            build: {write: false, minify: false, rollupOptions: {input: [join(fixtures, 'entry.js')]}},
-            plugins: [mocked({apiToken: '', islandRoots: [fixtures], include: ['entry.js'], seed: 42})],
+            build: {write: false, minify: false, rolldownOptions: {input: [join(fixtures, 'entry.js')]}},
+            plugins: [mocked({islandRoots: [fixtures], include: ['entry.js']})],
         });
 
         expect(configs[0]).toEqual({
@@ -127,17 +131,53 @@ describe('the defaults reaching the obfuscator', () => {
             debugProtection: false,
             debugProtectionInterval: 0,
             selfDefending: false,
-            seed: 42,
         });
+
+        vi.doUnmock('javascript-obfuscator');
+    });
+
+    // A 6.x config left as it was: no Pro call (the mock has no obfuscatePro), no seed.
+    it('ignore the options 7.0 removed', async () => {
+        vi.resetModules();
+
+        const configs = [];
+
+        vi.doMock('javascript-obfuscator', () => ({
+            default: {obfuscate: (_code, config) => (configs.push(config), {getObfuscatedCode: () => 'var a;'})},
+        }));
+
+        const {default: mocked} = await import('../src/index.js');
+
+        await build({
+            root: fixtures,
+            logLevel: 'silent',
+            build: {write: false, minify: false, rolldownOptions: {input: [join(fixtures, 'entry.js')]}},
+            plugins: [mocked({
+                islandRoots: [fixtures], include: ['entry.js'],
+                apiToken: 'token', vmObfuscation: true, vmObfuscationThreshold: 0.5, timeout: 1, version: '5.0.0', seed: 42,
+            })],
+        });
+
+        expect(configs).toHaveLength(2);
+        for (const config of configs) {
+            expect(config).toEqual({
+                optionsPreset: 'low-obfuscation',
+                target: 'browser-no-eval',
+                disableConsoleOutput: false,
+                debugProtection: false,
+                debugProtectionInterval: 0,
+                selfDefending: false,
+            });
+        }
 
         vi.doUnmock('javascript-obfuscator');
     });
 });
 
-describe('seed', () => {
+describe('a seed in overrides', () => {
     it('makes two builds byte-identical', async () => {
-        const a = await buildApp({seed: 1234});
-        const b = await buildApp({seed: 1234});
+        const a = await buildApp({overrides: {seed: 1234}});
+        const b = await buildApp({overrides: {seed: 1234}});
 
         expect(a).toBe(b);
     });

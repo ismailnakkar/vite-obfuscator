@@ -1,26 +1,25 @@
-const normalize = (p) => p.replaceAll('\\', '/');
+import {endsWithPath, toPosix} from './paths.js';
 
-// Suffix match on whole segments: 'first.js' matches '…/x/first.js', not '…/not-first.js'.
-// Shared by both matchers so they agree.
-const matchesEntry = (id, wanted) => id === wanted || id.endsWith(`/${wanted}`);
+export const chunksOf = (bundle) => Object.values(bundle).filter((output) => output.type === 'chunk');
+
+const isFacadeEntry = (chunk) => chunk.isEntry && chunk.facadeModuleId !== null;
 
 /** Chunks reached by at least one entry, and only by included ones. */
 export function selectTargets(bundle, include) {
-    const wanted = include.map(normalize);
-    const chunks = Object.values(bundle).filter((output) => output.type === 'chunk');
-    const byFileName = new Map(chunks.map((c) => [c.fileName, c]));
+    const wanted = include.map(toPosix);
+    const chunks = chunksOf(bundle);
+    const byFileName = new Map(chunks.map((chunk) => [chunk.fileName, chunk]));
 
-    const included = (chunk) => chunk.isEntry
-        && chunk.facadeModuleId !== null
-        && wanted.some((path) => matchesEntry(normalize(chunk.facadeModuleId), path));
+    const included = (chunk) => isFacadeEntry(chunk)
+        && wanted.some((path) => endsWithPath(toPosix(chunk.facadeModuleId), path));
 
     const reachedBy = new Map();
     // Seed unimported chunks too: Vite drops the facade of an HTML page whose script another page
     // shares, and that orphan script's imports would otherwise read as included-only, be renamed,
     // and 404.
-    const imported = new Set(chunks.flatMap((c) => [...c.imports, ...c.dynamicImports]));
+    const imported = new Set(chunks.flatMap((chunk) => [...chunk.imports, ...chunk.dynamicImports]));
 
-    for (const entry of chunks.filter((c) => c.isEntry || !imported.has(c.fileName))) {
+    for (const entry of chunks.filter((chunk) => chunk.isEntry || !imported.has(chunk.fileName))) {
         const queue = [entry.fileName];
         const seen = new Set();
 
@@ -44,9 +43,7 @@ export function selectTargets(bundle, include) {
 
 /** Include paths that match no entry: a typo, or entry names instead of source paths. */
 export function unmatchedIncludes(bundle, include) {
-    const ids = Object.values(bundle)
-        .filter((o) => o.type === 'chunk' && o.isEntry && o.facadeModuleId !== null)
-        .map((c) => normalize(c.facadeModuleId));
+    const ids = chunksOf(bundle).filter(isFacadeEntry).map((chunk) => toPosix(chunk.facadeModuleId));
 
-    return include.filter((p) => !ids.some((id) => matchesEntry(id, normalize(p))));
+    return include.filter((path) => !ids.some((id) => endsWithPath(id, toPosix(path))));
 }
