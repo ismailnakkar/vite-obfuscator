@@ -2,6 +2,7 @@ import {existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync}
 import {join} from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {pathToFileURL} from 'node:url';
+import vm from 'node:vm';
 import {gzipSync} from 'node:zlib';
 import {build, createBuilder} from 'vite';
 import {afterAll, describe, expect, it, vi} from 'vitest';
@@ -259,6 +260,54 @@ describe('a real build', () => {
 
         expect(readdirSync(outDir)).toEqual(['.vite']);
         expect(readFileSync(join(outDir, '.vite', 'manifest.json'), 'utf8')).toBe('{"old":true}');
+    });
+});
+
+describe('a classic script', () => {
+    const buildClassic = async (output) => {
+        const {output: [chunk]} = await build({
+            root: fixtures,
+            logLevel: 'silent',
+            build: {
+                write: false,
+                minify: false,
+                // Strict, as a library build keeps the entry's exports.
+                rolldownOptions: {input: join(fixtures, 'classic.js'), preserveEntrySignatures: 'strict', output},
+            },
+            plugins: [obfuscator({islandRoots: [fixtures], include: ['classic.js']})],
+        });
+
+        return chunk.code;
+    };
+
+    // A classic script's top-level declarations become properties of its global, as on window.
+    const globalsAfterRunning = (code) => {
+        const context = vm.createContext({});
+
+        vm.runInContext(code, context);
+
+        return context;
+    };
+
+    it('keeps the obfuscator\'s helpers out of the global scope of an IIFE', async () => {
+        const context = globalsAfterRunning(await buildClassic({format: 'iife'}));
+
+        expect(Object.keys(context)).toEqual(['ran']);
+        expect(context.ran).toBe('helped');
+    });
+
+    it('keeps a named IIFE\'s exports global, and only them', async () => {
+        const context = globalsAfterRunning(await buildClassic({format: 'iife', name: 'Classic'}));
+
+        expect(Object.keys(context).sort()).toEqual(['Classic', 'ran']);
+        expect(context.Classic.result).toBe('helped');
+    });
+
+    it('keeps the obfuscator\'s helpers out of the global scope of a UMD build', async () => {
+        const context = globalsAfterRunning(await buildClassic({format: 'umd', name: 'Classic'}));
+
+        expect(Object.keys(context).sort()).toEqual(['Classic', 'ran']);
+        expect(context.Classic.result).toBe('helped');
     });
 });
 

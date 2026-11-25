@@ -8,6 +8,7 @@ import {NOTHING_SPARED_MESSAGE, leakedMessage} from './messages.js';
 import {obfuscateUntilItParses} from './obfuscate.js';
 import {dependenciesFirst} from './order.js';
 import {rehashedName} from './rehash.js';
+import {functionScoped} from './scope.js';
 import {chunksOf, selectTargets, unmatchedIncludes} from './select.js';
 import {spareNodeModules} from './spare.js';
 
@@ -105,7 +106,7 @@ export default function obfuscator(options = {}) {
 
         // Post: Vite resolves __VITE_PRELOAD__ in a normal-order generateBundle.
         // An error here aborts before anything is written.
-        generateBundle: {order: 'post', handler(_outputOptions, bundle) {
+        generateBundle: {order: 'post', handler(outputOptions, bundle) {
             const chunks = chunksOf(bundle);
             const targets = selectTargets(bundle, include);
             const leaked = leakedIslandModules(chunks, targets, roots);
@@ -127,7 +128,8 @@ export default function obfuscator(options = {}) {
 
             for (const chunk of dependenciesFirst(targets)) {
                 const fileName = chunk.fileName;
-                const result = obfuscate(this, fileName, repointImports(chunk.code, renames));
+                const obfuscated = obfuscate(this, fileName, repointImports(chunk.code, renames));
+                const result = functionScoped(obfuscated, outputOptions, chunk);
 
                 checkSize(this, fileName, chunk.code, result);
 

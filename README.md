@@ -84,6 +84,11 @@ Importers, every emitted `.html`, and the `build.manifest`, `build.ssrManifest` 
 `build.chunkImportMap` files point at the rehashed names. An obfuscated chunk's sourcemap is dropped
 with a warning, since its `sourcesContent` would ship the readable code.
 
+An `iife` or `umd` build is a classic script, whose top-level declarations are window globals another
+script can replace. The obfuscator declares its helpers there, so the plugin wraps each obfuscated
+chunk of such a build in `(function(){…}).call(this)`. A named IIFE still declares its `name` as a
+global.
+
 The plugin runs in a post-order `generateBundle`, so a normal-order one of your own sees readable
 chunks.
 
@@ -97,6 +102,12 @@ The plugin runs only in `vite build`, so app tests need no fake or setup. This p
 `npm test`.
 
 ## Upgrading
+
+### From 7.0
+
+- An `iife` or `umd` build's obfuscated chunks now come wrapped in a function scope (see
+  [Output](#output)). Remove a wrapper plugin of your own that did the same: a second wrapper is
+  harmless, only redundant.
 
 ### From 6.x
 
